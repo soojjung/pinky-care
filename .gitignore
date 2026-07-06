@@ -1,0 +1,28 @@
+# Node / frontend
+node_modules
+dist
+dist-ssr
+*.tsbuildinfo
+
+# Python / backend
+__pycache__
+*.pyc
+.venv
+venv/
+.pytest_cache
+.mypy_cache
+
+# ROS2 / colcon
+ros2_ws/install
+ros2_ws/build
+ros2_ws/log
+
+# Env
+.env
+.env.local
+*.local
+
+# OS / Editor
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
