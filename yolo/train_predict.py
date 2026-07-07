@@ -53,6 +53,7 @@ def train():
         batch=BATCH,
         device=DEVICE,
         name=RUN_NAME,
+        exist_ok=True,      # 항상 같은 delivery_train/ 에 저장 → BEST_WEIGHTS 경로 고정
     )
     print(f"\n학습 완료 → {BEST_WEIGHTS}")
     return results

@@ -20,22 +20,54 @@
 
 ## 폴더 구조 (실제)
 
+데이터·학습은 **두 위치로 나뉜다**: 리포에서 버전 관리되는 코드(A)와,
+GPU 머신에만 있는 데이터셋·학습 산출물(B). 헷갈리지 않도록 분리해 표기.
+
+**(A) 리포 안 — `pinky-care/` (커밋 대상)**
+
 ```
-yolo/
+pinky-care/
+├── yolo/
+│   ├── notebooks/
+│   │   ├── 01_capture.ipynb   # 촬영 (ipywidgets 방식, 출력 제거본)
+│   │   └── 02_train.ipynb     # 학습/추론
+│   ├── capture_webcam.py      # 촬영 CLI (--class/--cam/--n, --probe로 인덱스 확인)
+│   ├── train_predict.py       # 학습/추론 CLI (train | predict)
+│   └── README.md              # (이 파일)
+└── backend/
+    ├── models/
+    │   └── pinky_yolo_v1.pt   # 최종 가중치 (best.pt 사본, ≈5MB) ← 백엔드가 로드
+    └── tests/fixtures/images/ # 회귀 테스트용 소량 이미지 (성공/실패)
+```
+
+> `yolo/` 자체엔 데이터셋·`runs/`·`yolo11n.pt`가 **없다**. 리포엔 코드·노트북과
+> 최종 가중치 한 개만 들어간다. (`__pycache__/`는 gitignore)
+
+**(B) GPU 머신 `~/yolo/` — 리포 밖 (커밋 X)**
+
+```
+~/yolo/
 ├── pinkycare.yolov8/          # Roboflow export 데이터셋
-│   ├── yolo_images/
-│   │   ├── images/train/images/val/
-│   │   └── labels/train/labels/val/
+│   ├── yolo_images/{images,labels}/{train,val}/
 │   ├── data.yaml              # Roboflow 원본 (클래스 순서 기준)
-│   ├── finish.yaml            # 학습용 (path를 로컬 경로로 수정해 사용)
-│   └── README.roboflow.txt
+│   ├── finish.yaml            # 학습용 (path를 로컬 절대경로로 수정)
+│   └── README.{dataset,roboflow}.txt
 ├── runs/detect/
-│   ├── delivery_train/        # 학습 결과 + weights/best.pt
+│   ├── delivery_train/weights/best.pt   # 학습 결과 → 여기서 backend로 복사
 │   └── val_predict/           # val 추론 결과
-├── capture_webcam.py          # 웹캠 촬영 스크립트 (CLI, c 키로 촬영, --probe로 인덱스 확인)
-├── train_predict.py           # 학습/추론 CLI (train | predict 모드)
+├── yolo1/{성공,실패,약}/       # 촬영 원본 (라벨링 전; 약은 구 4클래스 잔재)
 ├── yolo11n.pt                 # 사전학습 가중치
-└── README.md                  # (이 파일)
+└── (기타 실험물: yolo26n.pt, capture.py, bus.jpg, datasets/coco8 …)
+```
+
+**학습 결과가 리포로 들어가는 경로** — `runs/`의 `best.pt`는 그 이름으로 커밋하지
+않고, 백엔드가 로드하는 이름으로 복사한다:
+
+```
+~/yolo/runs/detect/delivery_train/weights/best.pt   # 산출물 (리포 밖)
+        │  cp
+        ▼
+pinky-care/backend/models/pinky_yolo_v1.pt          # 최종 가중치 (커밋 O, best.pt와 동일)
 ```
 
 **저장소 밖(gitignore 권장)**:
@@ -98,20 +130,33 @@ source ~/venv/yolo/bin/activate
 
 ### 1. 촬영 (웹캠)
 
-`capture_webcam.py` 실행. 성공/실패 각각 `CLASS_NAME`을 바꿔가며 촬영.
+`capture_webcam.py` 실행. 성공/실패 클래스를 `--class` 플래그로 바꿔가며 촬영.
 
 ```bash
 source ~/venv/yolo/bin/activate
-python capture_webcam.py --probe    # 처음 한 번 — 실제 카메라 인덱스 확인
-python capture_webcam.py            # capture 창 클릭 후 c=촬영, q=종료
+python capture_webcam.py --probe                 # 처음 한 번 — 실제 카메라 인덱스 확인
+python capture_webcam.py --class 성공            # 성공 촬영 (창 클릭 후 c=촬영, q=종료)
+python capture_webcam.py --class 실패 --n 50     # 실패, 이번 세션 50장만
 ```
 
 - 촬영 방식: `c` 키로 한 장씩 저장 (실시간 미리보기 창 확인하며)
-- 저장 위치: `yolo1/{성공|실패}/`
+- 저장 위치: `yolo1/{클래스}/` (예: `yolo1/성공/`, `yolo1/실패/`)
+- **CLI 플래그** (상단 상수를 매번 고칠 필요 없음. 안 주면 상수 기본값 사용):
+  | 플래그 | 의미 | 기본값 |
+  | --- | --- | --- |
+  | `--class` | 촬영할 클래스명 (저장 폴더명) | `성공` |
+  | `--cam` | 웹캠 인덱스 | `4` |
+  | `--n` | **이번 세션** 목표 장수 | `100` |
+  | `--probe` | 카메라 인덱스만 확인하고 종료 | — |
+- **이어찍기(덮어쓰기 방지)**: 재실행하면 해당 클래스 폴더의 마지막 번호
+  다음부터 이어서 저장한다. 예) 기존 30장 → `{클래스}_030.jpg`부터.
+  여러 세션에 나눠 찍어도 이전 사진이 덮어써지지 않음. 실행 시
+  `기존 N장 감지 — N번부터 이어서 저장` 메시지로 확인 가능.
+  (`--n`은 누적 총량이 아니라 **이번 세션에 추가로 찍을 장수**)
 - **카메라 인덱스 주의**: 환경마다 다름. `--probe`가 `probe/probe_*.jpg`를
-  저장하니 열어서 실제 웹캠 화면이 나온 인덱스를 확인하고 스크립트 상단
-  `CAM_INDEX` 를 그 값으로 수정. UVC 웹캠은 메타데이터 노드가 함께 잡혀
-  `isOpened()`가 True여도 프레임이 안 읽힐 수 있음.
+  저장하니 열어서 실제 웹캠 화면이 나온 인덱스를 확인하고 `--cam`으로 지정
+  (또는 스크립트 상단 `CAM_INDEX` 기본값 수정). UVC 웹캠은 메타데이터 노드가
+  함께 잡혀 `isOpened()`가 True여도 프레임이 안 읽힐 수 있음.
   (현재 머신 기준 실제 카메라 = index 4)
 - 촬영 중 각도·거리·조명·배경을 계속 바꿔 다양성 확보
 
