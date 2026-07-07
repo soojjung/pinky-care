@@ -39,6 +39,7 @@ yolo/pinkycare.yolov8/          # Roboflow export 데이터셋 (GPU 머신)
 yolo/*.pt                       # 사전학습·중간 가중치 (Ultralytics가 자동 다운로드)
 yolo/probe/                     # capture_webcam.py --probe 산출물
 yolo/yolo1/                     # capture_webcam.py 저장 루트 (촬영 raw)
+yolo/snapshots/                 # detect_ox.py s키 스냅샷
 
 # Jupyter
 .ipynb_checkpoints/

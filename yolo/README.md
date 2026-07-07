@@ -33,6 +33,7 @@ pinky-care/
 │   │   └── 02_train.ipynb     # 학습/추론
 │   ├── capture_webcam.py      # 촬영 CLI (--class/--cam/--n, --probe로 인덱스 확인)
 │   ├── train_predict.py       # 학습/추론 CLI (train | predict)
+│   ├── detect_ox.py           # 웹캠 실시간 O/X 판별 CLI (--cam/--conf/--post-to)
 │   └── README.md              # (이 파일)
 └── backend/
     ├── models/
@@ -218,6 +219,49 @@ python train_predict.py predict --source /path/to/images
 
 - 임계값 `conf=0.5` (스크립트 상단). 안 잡히면 0.25로 낮춰서 재실행
 - 결과 이미지: `runs/detect/val_predict/`
+
+### 3-2. 실시간 웹캠 판별 (detect_ox.py)
+
+학습된 가중치(`backend/models/pinky_yolo_v1.pt`)를 로드해 **웹캠 프레임마다
+추론**하고, 화면에 박스와 함께 O(성공)/X(실패) 판정을 실시간 표시한다.
+`train_predict.py predict`가 폴더 단위 배치 추론이라면, 이쪽은 라이브 스트림용.
+
+```bash
+source ~/venv/yolo/bin/activate
+
+python detect_ox.py --probe          # 처음 한 번 — 실제 카메라 인덱스 확인
+python detect_ox.py --cam 0          # 실시간 판별 (q=종료, s=스냅샷)
+
+# 확정되면 백엔드 배송 판별 엔드포인트로 자동 보고
+python detect_ox.py --cam 0 --post-to <deliveryId> --api http://localhost:8000
+
+# 디스플레이 없는 환경(SSH 등) — 창 없이 콘솔로만 판정
+python detect_ox.py --cam 0 --no-window
+```
+
+- **가중치 자동 탐색**: 리포 기준 `backend/models/pinky_yolo_v1.pt`를 기본 로드
+  (`--weights`로 변경 가능). 별도 `.pt` 복사 불필요.
+- **판정 안정화(debounce)**: 한 프레임 튐으로 O/X가 깜빡이지 않도록, 같은
+  라벨이 연속 `--stable`(기본 5) 프레임 이상 `--conf`(기본 0.5)를 넘겨야
+  **확정**으로 본다. 확정 순간에만 콘솔 출력 / 백엔드 보고가 발생.
+- **백엔드 연동(`--post-to`)**: 확정 시 `PATCH /deliveries/{id}/verification`을
+  호출. 성공→`{result: SUCCESS}`, 실패→`{result: FAILED, reason}`. 같은 배송에
+  중복 보고하지 않는다(다른 라벨이 새로 확정될 때만 재보고). → [`4. 백엔드로 반영`](#4-백엔드로-반영)
+- **CLI 플래그**:
+  | 플래그 | 의미 | 기본값 |
+  | --- | --- | --- |
+  | `--cam` | 웹캠 인덱스 | `4` (머신마다 다름, `--probe`로 확인) |
+  | `--conf` | 신뢰도 임계값 | `0.5` |
+  | `--stable` | 확정에 필요한 연속 프레임 수 | `5` |
+  | `--weights` | 가중치 경로 | `backend/models/pinky_yolo_v1.pt` |
+  | `--post-to` | 확정 판정을 보고할 배송 id | 없음(로컬만) |
+  | `--api` | 백엔드 base URL | `http://localhost:8000` |
+  | `--no-window` | 미리보기 창 없이 콘솔 출력만 | — |
+  | `--probe` | 카메라 인덱스만 확인하고 종료 | — |
+
+> **카메라 인덱스**: `capture_webcam.py`와 동일하게 환경마다 다르다. GPU 머신은
+> index 4였지만 다른 머신에선 0~3일 수 있으니 `--probe`로 실제 프레임이 나오는
+> 인덱스를 먼저 확인할 것.
 
 ### 4. 백엔드로 반영
 
