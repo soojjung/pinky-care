@@ -50,24 +50,30 @@
 
 ---
 
-### 3) 카메라 프레임을 백엔드에 어떻게 넘길지 (YOLO 트리거와 직결)
+### 3) 카메라 프레임을 백엔드에 어떻게 넘길지 (YOLO 트리거와 직결) ✅ 방식 A 확정
 
-**질문**: 로봇 도착 시 촬영한 이미지를 백엔드/YOLO가 어떻게 받나?
+**결정 (2026-07-07)**: 방식 A — ROS2가 초당 1회 백엔드에 HTTP POST. YOLO는 백엔드 안에서 실행하며, v1은 **환자 O/X 카드 판별** 방식으로 확정 (`yolo-plan.md §3.5` 참고).
 
-**옵션**
-- **A. ROS2가 `ARRIVED` 시점의 프레임을 백엔드에 HTTP POST** — 새 엔드포인트: `POST /deliveries/{id}/image` (multipart/form-data). YOLO는 백엔드 안에서 실행.
-- **B. 백엔드가 RTSP/WebRTC로 로봇 카메라 스트림 구독** — 상시 프레임 grab. 인프라 복잡.
-- **C. YOLO가 로봇 쪽에서 실행** — ROS2 노드가 추론 후 `PATCH /verification` 직접 호출. 백엔드는 카메라 안 만짐.
+**엔드포인트 (신규)**
+```
+POST /deliveries/{id}/image
+Content-Type: multipart/form-data
+Body: image=<jpeg or png>
+Response: 204
+```
 
-**추천**: 하드웨어에 GPU 있으면 **C**, 없으면 **A**. `yolo-plan.md §3.4`는 A를 가정.
+**ROS2 팀 요구사항**
+- 상태 `ARRIVED` 이후, 배송이 terminal(`SUCCESS`/`FAILED`) 상태가 될 때까지 **초당 1회** 최신 프레임 업로드
+- 카메라는 침대 방향으로 세팅. 환자가 손을 뻗어 O/X 카드를 카메라에 노출할 수 있는 자세를 캡처 가능해야 함
+- 30초간 이 폴링이 지속됨. 그 안에 백엔드가 O/X 카드를 인식하면 즉시 terminal 전환하고 SSE 스트림 종료 → 이 시점 이후 업로드는 백엔드가 무시하거나 404 반환 (delivery 캐시 삭제됨)
+
+**기존 검토 옵션 (참고용, 채택 안 함)**
+- B. RTSP/WebRTC 스트림 구독 — 인프라 복잡, MVP에 오버킬
+- C. 로봇 쪽에서 YOLO 실행 — GPU 유무·모델 배포 관리 이슈로 v1에선 보류. v2에서 GPU 로봇 확정 시 재검토.
 
 **결정 후 각자 할 일**
-- **A 선택 시**
-  - 정수진: `POST /deliveries/{id}/image` 엔드포인트 추가, `robot-status ARRIVED` 시 캐시된 이미지로 YOLO 실행
-  - 팀원: `ARRIVED` 순간 카메라 프레임을 백엔드에 업로드
-- **C 선택 시**
-  - 정수진: YOLO 모델/추론 코드를 Python 함수 형태로 팀원에게 제공
-  - 팀원: ROS2 노드가 추론 + `PATCH /verification` 콜
+- 정수진: `POST /deliveries/{id}/image` 엔드포인트 + 프레임 캐시(`frame_source.py`) + 30초 폴링 태스크(`services/yolo.py::wait_for_patient_response`) 구현
+- 팀원: `ARRIVED` 시점부터 terminal 상태 감지까지 초당 1회 프레임 업로드. terminal 감지는 SSE 구독 또는 응답 코드로 판단
 
 ---
 
@@ -123,8 +129,7 @@
 |---|---|---|
 | 새 배송 알림 | 전역 SSE 스트림 추가 | SSE 구독 클라이언트 |
 | 방→좌표 매핑 | 변경 없음 | `room_map.yaml` 관리 |
-| 카메라 프레임 (A안) | `POST /image` 엔드포인트 + 캐시 | ARRIVED 시 프레임 업로드 |
-| 카메라 프레임 (C안) | YOLO 함수 제공 | 로봇쪽 추론 + `PATCH /verification` |
+| 카메라 프레임 (A안 확정) | `POST /image` + 프레임 캐시 + 30초 폴링 태스크 + O/X 판별 | ARRIVED 이후 terminal까지 **초당 1회** 프레임 업로드 |
 | 로봇 이상 상황 | `robot-status FAILED` 지원 | Nav2 실패 콜백에서 PATCH |
 | 통합 테스트 | 백엔드 실행법 공유 | mock ROS2 노드 → Gazebo |
 
@@ -136,4 +141,5 @@
 
 | 날짜 | 항목 | 결정 | 스펙 반영 여부 |
 |---|---|---|---|
-| _(비어있음)_ | | | |
+| 2026-07-07 | §3 카메라 프레임 전달 방식 | 방식 A (ROS2 → `POST /deliveries/{id}/image`, 초당 1회, ARRIVED~terminal 동안) | `docs/yolo-plan.md §3.5` 반영 완료. `api-spec.md`에 엔드포인트 추가는 백엔드 구현 시 함께 진행 예정. |
+| 2026-07-07 | YOLO 판별 접근 | 4클래스 물품 인식 → 2클래스 O/X 카드 (환자 응답형). 타임아웃 30초, 무응답/모호 응답 모두 FAILED | `docs/yolo-plan.md`, `yolo/README.md` 반영 완료. |

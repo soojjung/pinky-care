@@ -18,9 +18,9 @@ class Room(str, Enum):
 
 class Item(str, Enum):
     MED = "약"
-    INJ = "주사"
-    BAND = "붕대"
-    SALINE = "생리식염수"
+    DIAPER = "기저귀"
+    GLUCOSE = "혈당측정키트"
+    WIPE = "물티슈"
 
 
 class Status(str, Enum):

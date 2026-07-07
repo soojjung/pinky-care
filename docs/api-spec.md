@@ -55,7 +55,7 @@
 |---|---|---|
 | `id` | string (UUID) | 배송 식별자 |
 | `room` | enum | `"101"` \| `"102"` \| `"103"` |
-| `item` | enum | `"약"` \| `"주사"` \| `"붕대"` \| `"생리식염수"` |
+| `item` | enum | `"약"` \| `"기저귀"` \| `"혈당측정키트"` \| `"물티슈"` |
 | `status` | enum | 아래 상태 표 참고 |
 | `createdAt` | string (ISO 8601) | 배송 생성 시각 |
 | `failReason` | string \| null | `status="FAILED"`일 때만 채움. 그 외 `null` |
@@ -329,7 +329,7 @@ class Room(str, Enum):
     R101 = "101"; R102 = "102"; R103 = "103"
 
 class Item(str, Enum):
-    MED = "약"; INJ = "주사"; BAND = "붕대"; SALINE = "생리식염수"
+    MED = "약"; DIAPER = "기저귀"; GLUCOSE = "혈당측정키트"; WIPE = "물티슈"
 
 class Status(str, Enum):
     REQUESTED = "REQUESTED"

@@ -17,6 +17,7 @@
 pinky-care/
 ├── frontend/              # React + TS + Vite (간호사용 웹 UI)
 ├── backend/               # FastAPI (배송 관리 + SSE + YOLO 판별)
+├── yolo/                  # YOLO 촬영·학습 워크플로 (노트북/스크립트)
 ├── ros2_ws/               # ROS2 워크스페이스 (자율주행 노드)
 ├── docs/                  # 팀 공용 문서 (API 명세서 등)
 │   └── api-spec.md

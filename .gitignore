@@ -26,3 +26,13 @@ ros2_ws/log
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
+
+# YOLO 학습 산출물
+datasets/                       # 이미지·라벨 원본 (Roboflow에서 다운받아 캐시)
+runs/                           # Ultralytics 학습 로그 (runs/detect/train*)
+yolo/**/raw_captures/           # 웹캠 촬영 raw (라벨링 전)
+yolo/notebooks/.ipynb_checkpoints/
+*.pt.tmp
+
+# Jupyter
+.ipynb_checkpoints/

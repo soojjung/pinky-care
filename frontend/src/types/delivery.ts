@@ -1,6 +1,6 @@
 export type Room = "101" | "102" | "103";
 
-export type Item = "약" | "주사" | "붕대" | "생리식염수";
+export type Item = "약" | "기저귀" | "혈당측정키트" | "물티슈";
 
 export type DeliveryStatus =
   | "REQUESTED"

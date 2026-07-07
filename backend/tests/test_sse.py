@@ -55,7 +55,7 @@ async def test_sse_streams_full_lifecycle_including_verifying() -> None:
 
 async def test_sse_failed_path_emits_verifying_then_failed() -> None:
     async with _base_client() as client:
-        created = await client.post("/deliveries", json={"room": "102", "item": "붕대"})
+        created = await client.post("/deliveries", json={"room": "102", "item": "기저귀"})
         delivery_id = created.json()["id"]
 
         async def consume() -> list[str]:
@@ -84,7 +84,7 @@ async def test_sse_failed_path_emits_verifying_then_failed() -> None:
 
 async def test_sse_reconnect_to_terminal_delivery_sends_snapshot_and_closes() -> None:
     async with _base_client() as client:
-        created = await client.post("/deliveries", json={"room": "103", "item": "주사"})
+        created = await client.post("/deliveries", json={"room": "103", "item": "물티슈"})
         delivery_id = created.json()["id"]
         await client.patch(
             f"/deliveries/{delivery_id}/robot-status", json={"status": "MOVING"},
