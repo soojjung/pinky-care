@@ -11,10 +11,12 @@ from app.services.store import store
 def _reset_state():
     store._items.clear()
     broadcaster._subscribers.clear()
+    broadcaster._new_subscribers.clear()
     frame_cache._latest.clear()
     yield
     store._items.clear()
     broadcaster._subscribers.clear()
+    broadcaster._new_subscribers.clear()
     frame_cache._latest.clear()
 
 
@@ -25,7 +27,7 @@ def client() -> TestClient:
 
 @pytest.fixture
 def created_id(client: TestClient) -> str:
-    r = client.post("/deliveries", json={"room": "101", "item": "약"})
+    r = client.post("/deliveries", json={"room": "102", "item": "약"})
     assert r.status_code == 201
     return r.json()["id"]
 

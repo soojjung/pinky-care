@@ -2,10 +2,10 @@ from fastapi.testclient import TestClient
 
 
 def test_create_returns_requested_with_camel_case(client: TestClient) -> None:
-    r = client.post("/deliveries", json={"room": "101", "item": "약"})
+    r = client.post("/deliveries", json={"room": "102", "item": "약"})
     assert r.status_code == 201
     body = r.json()
-    assert body["room"] == "101"
+    assert body["room"] == "102"
     assert body["item"] == "약"
     assert body["status"] == "REQUESTED"
     assert body["failReason"] is None

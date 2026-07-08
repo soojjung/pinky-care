@@ -157,7 +157,37 @@ async def _run_yolo_pipeline(delivery_id: str) -> None:
 def create_delivery(payload: DeliveryCreate) -> Delivery:
     delivery = new_delivery(payload.room, payload.item)
     store.add(delivery)
+    # 로봇 미션 디스패처가 구독하는 전역 스트림으로 새 배송 알림
+    n = broadcaster.publish_new(delivery)
+    log.info("새 배송 %s (%s호) → 디스패처 %d명에게 전송", delivery.id, delivery.room.value, n)
+    if n == 0:
+        log.warning("연결된 디스패처가 없음 — 로봇이 이 배송을 못 받음 (디스패처 먼저 실행 필요)")
     return delivery
+
+
+@router.get("/events")
+async def stream_new_deliveries() -> EventSourceResponse:
+    """새로 생성되는 배송을 실시간으로 흘려보내는 전역 스트림.
+
+    로봇 쪽 미션 디스패처가 이 스트림을 구독해서, 배송이 생기면
+    ``junction_1.py`` 를 room·delivery-id 로 자동 실행한다.
+
+    NOTE: 이 라우트는 ``/{delivery_id}`` 보다 먼저 선언되어야 한다.
+    안 그러면 ``/deliveries/events`` 가 delivery_id="events" 로 잡힌다.
+    """
+
+    async def event_generator():
+        queue = broadcaster.subscribe_new()
+        log.info("디스패처 연결됨 (현재 %d명 구독 중)", broadcaster.new_subscriber_count())
+        try:
+            while True:
+                snapshot = await queue.get()
+                yield {"event": "delivery", "data": snapshot}
+        finally:
+            broadcaster.unsubscribe_new(queue)
+            log.info("디스패처 연결 종료 (남은 구독자 %d명)", broadcaster.new_subscriber_count())
+
+    return EventSourceResponse(event_generator(), ping=_SSE_PING_INTERVAL_S)
 
 
 @router.get(

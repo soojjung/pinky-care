@@ -11,9 +11,10 @@ class CamelBase(BaseModel):
 
 
 class Room(str, Enum):
-    R101 = "101"
+    # 로봇 SLAM 맵 기준 배송 병실 (101호는 간호실/복귀 지점이라 제외)
     R102 = "102"
     R103 = "103"
+    R104 = "104"
 
 
 class Item(str, Enum):

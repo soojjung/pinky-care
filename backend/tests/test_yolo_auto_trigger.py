@@ -47,7 +47,7 @@ def _mock_return_process():
 
 
 async def _make_arrived_delivery(client: httpx.AsyncClient) -> str:
-    r = await client.post("/deliveries", json={"room": "101", "item": "약"})
+    r = await client.post("/deliveries", json={"room": "102", "item": "약"})
     delivery_id = r.json()["id"]
     await client.patch(
         f"/deliveries/{delivery_id}/robot-status", json={"status": "MOVING"}

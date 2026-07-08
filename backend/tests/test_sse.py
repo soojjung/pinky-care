@@ -26,7 +26,7 @@ async def _read_status_events(response: httpx.Response, until_terminal: bool = T
 
 async def test_sse_streams_full_lifecycle_including_verifying() -> None:
     async with _base_client() as client:
-        created = await client.post("/deliveries", json={"room": "101", "item": "약"})
+        created = await client.post("/deliveries", json={"room": "104", "item": "약"})
         delivery_id = created.json()["id"]
 
         async def consume() -> list[str]:

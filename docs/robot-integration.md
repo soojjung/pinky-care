@@ -158,12 +158,37 @@ def _show_emotion_and_return(self, style):
 
 ---
 
+## 2.5 미션 자동 트리거 — `mission_dispatcher.py` (신규)
+
+프론트에서 배송이 생성되면 로봇이 자동으로 출발하도록, 백엔드에 전역 스트림을
+추가하고 로봇 쪽에 디스패처를 두었다.
+
+- **백엔드**: `GET /deliveries/events` — 새 배송이 생기면 `event: delivery` 로 스냅샷 push
+- **로봇**: `mission_dispatcher.py` — 위 스트림을 구독하다가 배송이 들어오면
+  `junction_1.py --room-number <room> --delivery-id <id>` 를 자동 실행
+
+한 번에 하나의 미션만 순차 처리하고(주행 중이면 끝날 때까지 대기), SSE 가 끊기면
+자동 재접속한다. 로봇에서 **상시 실행**해 두는 진입점:
+
+```bash
+# 로봇(라즈베리파이)에서, junction_1.py 와 같은 디렉터리에 함께 배포
+BACKEND_URL=http://<노트북-IP>:8000 python3 mission_dispatcher.py
+# 예: 로봇 AP(192.168.4.1) 에 노트북이 붙어 192.168.4.19 를 받은 경우
+#     BACKEND_URL=http://192.168.4.19:8000 python3 mission_dispatcher.py
+```
+
+이제 시연 흐름은: **프론트에서 방·물품 선택 → 배송 생성 → 디스패처가 감지 →
+`junction_1.py` 자동 실행** (수동으로 CLI 를 칠 필요 없음).
+
+---
+
 ## 3. 백엔드 API 참조 (로봇이 부르는 것들)
 
 전체 스펙: [`api-spec.md`](./api-spec.md)
 
 | 시점 | 메서드 · 경로 | 페이로드 | 응답 |
 |---|---|---|---|
+| 새 배송 구독 (디스패처, 상시) | `GET /deliveries/events` | — | SSE `event: delivery` 스냅샷 스트림 |
 | 이동 시작 | `PATCH /deliveries/{id}/robot-status` | `{"status":"MOVING"}` | 200 Delivery |
 | 병실 도착 | `PATCH /deliveries/{id}/robot-status` | `{"status":"ARRIVED"}` | 200 Delivery |
 | 카메라 프레임 (초당 1회, 30초) | `POST /deliveries/{id}/image` (multipart) | `image=<JPEG>` | 204 No Content |
@@ -228,6 +253,8 @@ curl $BACKEND/deliveries/$ID
 
 ## 6. 체크리스트 (요약)
 
+- [x] 미션 자동 트리거: 백엔드 `GET /deliveries/events` + 로봇 `mission_dispatcher.py`
+- [ ] 로봇에서 `mission_dispatcher.py` 상시 실행 (BACKEND_URL 지정)
 - [ ] `BACKEND_URL` 환경변수화 (`os.environ.get`)
 - [ ] `camera_callback` 30초 종료 시 `rclpy.shutdown()` 제거 → 폴링 진입
 - [ ] `_start_result_polling()` 함수 신설 (SUCCESS / FAILED / AWAITING_NURSE 분기)

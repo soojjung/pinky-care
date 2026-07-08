@@ -1,10 +1,13 @@
 """Pinky Pro 병동 배송 로봇의 Nav2 목적지 이동 및 도착 후 감시 노드.
 
-- 101/102/103호로 이동한 뒤 30초간 카메라 프레임을 백엔드로 업로드
-- 업로드가 끝나면 배송 상태를 폴링해 SUCCESS/FAILED 확정 시 LCD 표정 표시 후
-  간호실로 자율 복귀 (백엔드가 subprocess를 띄우던 v1 방식은 삭제됨)
-- '복귀' 상태로 실행되면 간호실 좌표로 이동하고, LCD에 배송 결과 표정 출력
+- 102/103/104호로 이동한 뒤 30초간 카메라 프레임을 백엔드로 업로드
+- 업로드가 끝나면 배송 상태를 폴링해 SUCCESS/FAILED 확정 시 표정 표시 후
+  간호실(101호)로 자율 복귀 (백엔드가 subprocess를 띄우던 v1 방식은 삭제됨)
+- '복귀' 상태로 실행되면 간호실 좌표로 이동하고, 배송 결과 표정 출력
   (수동 호출용 백엔드 없이도 사용 가능한 진입점)
+
+표정 표시는 LCD 를 직접 제어하지 않고 로봇의 emotion_server(set_emotion 서비스)에
+요청만 보낸다. (nav_goal_and_check_node.py 와 동일 방식 — GPIO 충돌 방지)
 """
 # pip install requests cvbridge
 import argparse
@@ -18,8 +21,7 @@ import rclpy
 import requests  # 백엔드 API 전송
 from cv_bridge import CvBridge
 from nav2_msgs.action import NavigateToPose
-from PIL import Image, ImageDraw, ImageFont, ImageSequence
-from pinky_lcd.pinky_lcd import LCD
+from pinky_interfaces.srv import Emotion  # 로봇 emotion_server 서비스
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import Image as RosImage
@@ -32,48 +34,28 @@ BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 POLL_INTERVAL_SEC = 1.0     # 상태 조회 주기 (백엔드 부담 무시할 수준)
 MAX_POLL_SEC = 600          # 안전장치: 10분 넘게 terminal이 안 오면 강제 실패 처리
 
-# 실제 로봇에서 amcl_pose로 받아온 방별 목적지 좌표 (정규화 확인 완료)
+# 실제 로봇 SLAM 맵에서 amcl_pose로 검증한 방별 목적지 좌표.
+# (nav_goal_and_check_node.py 와 동일 좌표계 — 로봇팀 실측값)
 ROOMS = {
-    # 101, 102, 103호는 도착 후 +y축 방향(맵 위쪽)을 바라보도록 설정
-    101: {'x': 0.63,  'y': 1.585, 'qz': 0.7071,  'qw': 0.7071,  'name': '101호'},
-    102: {'x': 1.333, 'y': 1.585, 'qz': 0.7071,  'qw': 0.7071,  'name': '102호'},
-    103: {'x': 1.807, 'y': 1.585, 'qz': 0.7071,  'qw': 0.7071,  'name': '103호'},
+    # 배송 병실 102/103/104호
+    102: {'x': 0.63,  'y': 1.585, 'qz': 0.6992, 'qw': 0.7149, 'name': '102호'},
+    103: {'x': 1.333, 'y': 1.585, 'qz': 0.7089, 'qw': 0.7053, 'name': '103호'},
+    104: {'x': 1.807, 'y': 1.585, 'qz': 0.7055, 'qw': 0.7087, 'name': '104호'},
 
-    # 복귀(간호실) 시에는 -y축 방향(맵 아래쪽)을 바라보도록 설정
-    '복귀': {'x': 0.0, 'y': 0.0, 'qz': -0.7071, 'qw': 0.7071, 'name': '간호실'},
+    # 복귀 지점 = 101호(간호실). 실측 좌표·자세 사용.
+    '복귀': {'x': 0.03, 'y': 1.3, 'qz': 0.7915, 'qw': 0.6111, 'name': '간호실'},
 }
 
 ARRIVAL_THRESHOLD = 0.2  # m
 
-_LCD_WIDTH, _LCD_HEIGHT = 800, 480  # Pinky Pro 표준 해상도
-_SUCCESS_STYLE = {
-    "background": (255, 192, 203),
-    "text": (255, 255, 255),
-    "message": "배송 성공!",
-    "gif": "/home/user/images/happy_face.gif",
+_EMOTION_DISPLAY_SEC = 3.0  # 복귀 전 표정을 보여줄 시간
+
+# 배송 결과 → emotion_server 가 아는 gif 이름
+_EMOTION_MAP = {
+    'NORMAL': 'basic',
+    'SUCCESS': 'happy',
+    'FAILURE': 'sad',
 }
-_FAILURE_STYLE = {
-    "background": (70, 130, 180),
-    "text": (255, 255, 255),
-    "message": "배송 실패!",
-    "gif": "/home/user/images/sad_face.gif",
-}
-
-
-def _render_status_text(status_text, background, text_color):
-    """상태 안내 문구를 가운데 정렬해 그린 PIL 이미지를 반환한다."""
-    text_img = Image.new('RGB', (_LCD_WIDTH, _LCD_HEIGHT), color=background)
-    draw = ImageDraw.Draw(text_img)
-    try:
-        font = ImageFont.truetype("NanumGothic.ttf", 50)
-    except OSError:
-        font = ImageFont.load_default()
-
-    bbox = draw.textbbox((0, 0), status_text, font=font)
-    x = (_LCD_WIDTH - (bbox[2] - bbox[0])) // 2
-    y = (_LCD_HEIGHT - (bbox[3] - bbox[1])) // 2
-    draw.text((x, y), status_text, fill=text_color, font=font)
-    return text_img
 
 
 class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
@@ -104,11 +86,19 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
         self._poll_timer = None
         self._poll_started_at = None
 
+        # LCD 직접 제어 대신 emotion_server 에 서비스로 표정 요청 (GPIO 충돌 방지)
+        self.emotion_client = self.create_client(Emotion, 'set_emotion')
+        if not self.emotion_client.wait_for_service(timeout_sec=3.0):
+            self.get_logger().warn(
+                'emotion_server 의 set_emotion 서비스가 아직 안 떠 있습니다. '
+                '(emotion_server 를 먼저 실행했는지 확인)'
+            )
+
         if room_number == '복귀' and self.delivery_id:
             self.show_emotion_face()
 
     def show_emotion_face(self):
-        """(수동 호출용) 백엔드에서 최종 상태를 받아 LCD 표정 GIF를 재생한다.
+        """(수동 호출용) 백엔드에서 최종 상태를 받아 표정을 표시한다.
 
         v2에선 배송 종료 후 로봇이 폴링으로 스스로 결정하므로 이 함수는
         ``--state 복귀`` 진입점에서만 쓰인다.
@@ -120,32 +110,24 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
             self.get_logger().error(f"백엔드 상태 조회 실패: {e}")
             return
 
-        style = _SUCCESS_STYLE if final_status == "SUCCESS" else _FAILURE_STYLE
-        self.get_logger().info(f"상태={final_status} → LCD 표시")
-        self._show_emotion_with_style(style)
+        flag = "SUCCESS" if final_status == "SUCCESS" else "FAILURE"
+        self.get_logger().info(f"상태={final_status} → 표정 {flag}")
+        self.set_emotion(flag)
 
-    def _show_emotion_with_style(self, style):
-        """LCD에 배송 결과 문구와 표정 GIF 를 재생한다.
+    def set_emotion(self, flag):
+        """emotion_server 에 표정 요청을 보낸다. flag: 'NORMAL'|'SUCCESS'|'FAILURE'.
 
-        3초 문구 + GIF 시퀀스로 총 5~7초 정도 blocking. ROS2 executor에서 호출되지만
-        폴링 타이머가 이미 취소된 뒤라 다른 콜백 지연 우려 없음.
+        서비스 응답을 기다리지 않고 요청만 비동기로 보낸다(emotion_server 가
+        LCD 표시를 전담). 서비스가 안 떠 있으면 로그만 남기고 넘어간다.
         """
-        try:
-            lcd = LCD()
-            text_img = _render_status_text(
-                style["message"], style["background"], style["text"]
-            )
-            lcd.img_show(text_img)
-            time.sleep(3.0)
-
-            gif = Image.open(style["gif"])
-            for frame in ImageSequence.Iterator(gif):
-                lcd.img_show(frame)
-                time.sleep(0.1)
-            lcd.clear()
-            self.get_logger().info("간호실로 복귀합니다.")
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            self.get_logger().error(f"LCD 표시 오류: {e}")
+        emotion_name = _EMOTION_MAP.get(flag, 'basic')
+        if not self.emotion_client.service_is_ready():
+            self.get_logger().warn('emotion_server 미준비 — 표정 요청 건너뜀')
+            return
+        req = Emotion.Request()
+        req.emotion = emotion_name
+        self.emotion_client.call_async(req)
+        self.get_logger().info(f"emotion_server 표정 요청: {emotion_name}")
 
     def send_goal(self):
         """Nav2 액션 서버로 현재 room의 목적지 좌표를 전송한다."""
@@ -206,13 +188,13 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     self.get_logger().error(f"백엔드 통신 실패 (ARRIVED): {e}")
 
-            if self.room_key in [101, 102, 103]:
+            if self.room_key in [102, 103, 104]:
                 self.get_logger().info(f'{self.yolo_duration}초간 실시간 객체 탐지를 시작합니다.')
                 self.yolo_start_time = time.time()
 
                 self.camera_sub = self.create_subscription(
                     RosImage,
-                    '/image_raw',
+                    '/camera/image_raw',   # 로봇 실제 카메라 토픽 (camera.py 와 동일)
                     self.camera_callback,
                     10,
                 )
@@ -290,10 +272,10 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
         self.get_logger().info(f"[폴링] status={status} · elapsed={elapsed:.0f}s")
 
         if status == "SUCCESS":
-            self._finish_polling_and_return(_SUCCESS_STYLE)
+            self._finish_polling_and_return("SUCCESS")
             return
         if status == "FAILED":
-            self._finish_polling_and_return(_FAILURE_STYLE)
+            self._finish_polling_and_return("FAILURE")
             return
 
         # AWAITING_NURSE, VERIFYING 등은 계속 대기하되 안전장치 확인
@@ -301,19 +283,20 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
             self.get_logger().error(
                 f"폴링 상한({MAX_POLL_SEC}s) 초과 — 실패 처리로 강제 복귀"
             )
-            self._finish_polling_and_return(_FAILURE_STYLE)
+            self._finish_polling_and_return("FAILURE")
 
-    def _finish_polling_and_return(self, style):
-        """폴링 종료 → LCD 표정 → 간호실 복귀."""
+    def _finish_polling_and_return(self, flag):
+        """폴링 종료 → 표정 표시 → 간호실 복귀. flag: 'SUCCESS'|'FAILURE'."""
         if self._poll_timer is not None:
             self._poll_timer.cancel()
             self._poll_timer = None
 
-        self._show_emotion_with_style(style)
+        self.set_emotion(flag)
+        time.sleep(_EMOTION_DISPLAY_SEC)  # 표정 보여줄 시간
         self._send_return_goal()
 
     def _send_return_goal(self):
-        """간호실 (0, 0) 좌표로 Nav2 goal 을 새로 전송한다."""
+        """간호실(101호) 좌표로 Nav2 goal 을 새로 전송한다."""
         return_coords = ROOMS['복귀']
         self.goal_x = return_coords['x']
         self.goal_y = return_coords['y']
@@ -342,7 +325,7 @@ def main():
     """CLI 인자를 파싱해 NavGoalNode를 실행한다."""
     parser = argparse.ArgumentParser(description='목적지 입력 및 도착 확인 프로그램')
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--room-number', type=int, choices=[101, 102, 103],
+    group.add_argument('--room-number', type=int, choices=[102, 103, 104],
                        help='방 번호를 입력하세요')
     group.add_argument('--state', type=str, choices=['복귀'],
                        help='로봇 복귀를 원할 시 "복귀"를 입력해주세요')
