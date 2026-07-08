@@ -1,0 +1,29 @@
+[MASTER]
+# FastAPI + Pydantic 백엔드용 Pylint 설정.
+# 테스트, 가상환경, 빌드 산출물은 lint 대상에서 제외.
+ignore=.venv,.pytest_cache,pinky_care_backend.egg-info,__pycache__
+ignore-paths=^tests/.*$
+
+[MESSAGES CONTROL]
+# FastAPI/Pydantic 패턴에서 자주 오탐되거나 실익이 낮은 규칙 비활성화.
+disable=
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-few-public-methods,
+    broad-exception-caught,
+    logging-fstring-interpolation,
+    duplicate-code
+
+[FORMAT]
+max-line-length=100
+
+[DESIGN]
+# 라우터/서비스 계층에서 인자·속성이 자연스럽게 늘어남.
+max-args=8
+max-attributes=12
+max-locals=20
+
+[BASIC]
+# Pydantic 필드명(snake_case)과 FastAPI path 파라미터 관례를 존중.
+good-names=i,j,k,e,id,db

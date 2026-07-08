@@ -1,4 +1,6 @@
 import asyncio
+import os
+import subprocess
 
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
@@ -24,6 +26,9 @@ router = APIRouter(prefix="/deliveries", tags=["deliveries"])
 
 _VERIFYING_TO_RESULT_DELAY_S = 0.3
 _SSE_PING_INTERVAL_S = 30
+_RETURN_SCRIPT = os.path.expanduser(
+    "~/pinky_pro/src/pinky_pro/pinky_navigation/scripts/junction_1.py"
+)
 
 
 def _not_found(delivery_id: str) -> HTTPException:
@@ -113,6 +118,11 @@ async def submit_verification(delivery_id: str, payload: VerificationUpdate) -> 
         delivery.fail_reason = payload.reason
 
     broadcaster.publish(delivery)
+
+    subprocess.Popen(
+        ["python3", _RETURN_SCRIPT, "--state", "복귀", "--delivery-id", delivery_id]
+    )
+
     return delivery
 
 
