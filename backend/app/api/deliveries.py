@@ -64,70 +64,78 @@ def _trigger_return_process(delivery_id: str) -> None:
     )
 
 
-async def _complete_verification(
+async def _complete_verification_legacy(
     delivery: Delivery,
     result: VerificationResult,
     reason: str | None,
-    *,
-    wait_for_nurse_on_failure: bool,
 ) -> None:
-    """검증 결과 확정 공통 로직 (YOLO 자동 판정 · 간호사 수동 입력 모두 재사용).
+    """레거시 수동 PATCH /verification 로직.
 
-    - 성공: ARRIVED → VERIFYING → SUCCESS 전이 + 자동 복귀 트리거
-    - 실패:
-        * ``wait_for_nurse_on_failure=True`` (YOLO 자동 경로) → VERIFYING → AWAITING_NURSE.
-          실제 복귀는 나중에 ``/nurse-return-command`` 에서 발동.
-        * ``wait_for_nurse_on_failure=False`` (레거시 수동 PATCH) → VERIFYING → FAILED
-          + 즉시 복귀 트리거 (v2 이전 동작 유지).
+    ARRIVED → VERIFYING(0.3초 UI 애니메이션) → SUCCESS 또는 FAILED (자동 복귀).
+    YOLO 자동 파이프라인을 우회해서 즉시 결과를 확정할 때 사용.
     """
-    delivery.status = Status.VERIFYING
-    broadcaster.publish(delivery)
+    if delivery.status != Status.VERIFYING:
+        delivery.status = Status.VERIFYING
+        broadcaster.publish(delivery)
 
     await asyncio.sleep(_VERIFYING_TO_RESULT_DELAY_S)
 
     if result == VerificationResult.SUCCESS:
         delivery.status = Status.SUCCESS
         delivery.fail_reason = None
-        broadcaster.publish(delivery)
-        _trigger_return_process(delivery.id)
-        return
-
-    delivery.fail_reason = reason
-    if wait_for_nurse_on_failure:
-        delivery.status = Status.AWAITING_NURSE
-        broadcaster.publish(delivery)
     else:
         delivery.status = Status.FAILED
-        broadcaster.publish(delivery)
-        _trigger_return_process(delivery.id)
+        delivery.fail_reason = reason
+    broadcaster.publish(delivery)
+    _trigger_return_process(delivery.id)
 
 
 async def _run_yolo_pipeline(delivery_id: str) -> None:
     """ARRIVED 도달 시 자동 실행되는 백그라운드 30초 창 폴링 태스크.
 
-    창이 끝나면 YOLO 결과에 따라 SUCCESS 또는 AWAITING_NURSE로 전이한다.
-    중간에 외부 PATCH /verification 등으로 상태가 이미 넘어갔다면 조용히 종료.
+    상태 흐름:
+        ARRIVED → (즉시) VERIFYING → (30초 동안 폴링) → SUCCESS 또는 AWAITING_NURSE
+
+    VERIFYING 을 창 시작 시점에 발행함으로써 프론트에서 "확인 중" 스텝이
+    30초 내내 유지된다 (시나리오 v3 §3③).
     """
     try:
+        delivery = store.get(delivery_id)
+        if delivery is None or delivery.status != Status.ARRIVED:
+            log.info(
+                "YOLO 태스크: 시작 시점 상태가 ARRIVED 아님 (%s), 스킵",
+                delivery_id,
+            )
+            return
+
+        # 창 시작 시점에 VERIFYING 으로 전이
+        delivery.status = Status.VERIFYING
+        broadcaster.publish(delivery)
+
         source = BoundFrameSource(frame_cache, delivery_id)
         outcome = await yolo.wait_for_patient_response(source)
 
         delivery = store.get(delivery_id)
         if delivery is None:
             return
-        if delivery.status != Status.ARRIVED:
+        if delivery.status != Status.VERIFYING:
             log.info(
-                "YOLO 태스크: 상태가 이미 %s 라 자동 전이 스킵 (%s)",
+                "YOLO 태스크: 창 종료 시점에 상태가 이미 %s 라 결과 전이 스킵 (%s)",
                 delivery.status.value,
                 delivery_id,
             )
             return
 
         reason_value = outcome.reason.value if outcome.reason else None
-        await _complete_verification(
-            delivery, outcome.result, reason_value,
-            wait_for_nurse_on_failure=True,
-        )
+        if outcome.result == VerificationResult.SUCCESS:
+            delivery.status = Status.SUCCESS
+            delivery.fail_reason = None
+            broadcaster.publish(delivery)
+            _trigger_return_process(delivery.id)
+        else:
+            delivery.status = Status.AWAITING_NURSE
+            delivery.fail_reason = reason_value
+            broadcaster.publish(delivery)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001
@@ -227,13 +235,11 @@ async def submit_verification(delivery_id: str, payload: VerificationUpdate) -> 
     if delivery is None:
         raise _not_found(delivery_id)
 
-    if delivery.status != Status.ARRIVED:
+    # ARRIVED 는 사람이 자동 파이프라인 시작 전에 override, VERIFYING 은 진행 중 override
+    if delivery.status not in (Status.ARRIVED, Status.VERIFYING):
         raise _invalid_transition(delivery.status, Status.VERIFYING)
 
-    await _complete_verification(
-        delivery, payload.result, payload.reason,
-        wait_for_nurse_on_failure=False,
-    )
+    await _complete_verification_legacy(delivery, payload.result, payload.reason)
     return delivery
 
 

@@ -27,6 +27,10 @@ ros2_ws/log
 .vscode/*
 !.vscode/extensions.json
 
+# Claude Code 로컬 상태 (팀원 간 공유 X)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
 # YOLO 학습 산출물
 datasets/                       # 이미지·라벨 원본 (Roboflow에서 다운받아 캐시)
 runs/                           # Ultralytics 학습 로그 (runs/detect/train*)

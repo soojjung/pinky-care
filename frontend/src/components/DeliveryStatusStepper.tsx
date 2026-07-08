@@ -11,15 +11,21 @@ interface Props {
 export default function DeliveryStatusStepper({ current }: Props) {
   const isFailed = current === "FAILED";
   const isSuccess = current === "SUCCESS";
+  const isAwaitingNurse = current === "AWAITING_NURSE";
   const isDone = isSuccess || isFailed;
   const currentIndex = DELIVERY_FLOW.indexOf(current);
 
   return (
     <ol className="space-y-6">
       {DELIVERY_FLOW.map((status, i) => {
-        const done = isDone ? !isFailed || i < DELIVERY_FLOW.length - 1 || isSuccess : i < currentIndex;
-        const active = !isDone && i === currentIndex;
         const failedHere = isFailed && i === DELIVERY_FLOW.length - 1;
+        // AWAITING_NURSE와 SUCCESS는 정상 흐름 전체가 지나간 상태로 취급
+        const done =
+          isSuccess ||
+          isAwaitingNurse ||
+          (isFailed && !failedHere) ||
+          (!isDone && !isAwaitingNurse && i < currentIndex);
+        const active = !isDone && !isAwaitingNurse && i === currentIndex;
 
         return (
           <li key={status} className="flex items-center gap-4">
@@ -54,6 +60,19 @@ export default function DeliveryStatusStepper({ current }: Props) {
           </li>
         );
       })}
+      {isAwaitingNurse && (
+        <li className="flex items-center gap-4 border-t border-red-100 pt-4">
+          <span
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-100 text-lg text-red-700"
+            aria-hidden
+          >
+            ⚠
+          </span>
+          <span className="animate-pulse text-xl font-semibold text-red-700">
+            확인 필요
+          </span>
+        </li>
+      )}
     </ol>
   );
 }

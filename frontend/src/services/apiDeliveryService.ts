@@ -1,4 +1,9 @@
-import { isTerminal, type Delivery, type DeliveryRequest } from "@/types/delivery";
+import {
+  isTerminal,
+  type Delivery,
+  type DeliveryRequest,
+  type NurseReturnCommand,
+} from "@/types/delivery";
 import type { DeliveryService } from "./deliveryService";
 
 const BASE_URL =
@@ -69,5 +74,21 @@ export const apiDeliveryService: DeliveryService = {
     });
 
     return () => es.close();
+  },
+
+  async sendNurseReturnCommand(
+    id: string,
+    command: NurseReturnCommand,
+  ): Promise<Delivery> {
+    const res = await fetch(
+      `${BASE_URL}/deliveries/${encodeURIComponent(id)}/nurse-return-command`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(command),
+      },
+    );
+    if (!res.ok) throw await toApiError(res);
+    return (await res.json()) as Delivery;
   },
 };

@@ -1,13 +1,11 @@
-import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useDeliveryStatus } from "@/hooks/useDeliveryStatus";
-import { deliveryService } from "@/services";
+import { formatFailReason } from "@/types/delivery";
 
 export default function DeliveryResultPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { delivery, error } = useDeliveryStatus(id);
-  const [retrying, setRetrying] = useState(false);
 
   if (error) {
     return (
@@ -29,20 +27,6 @@ export default function DeliveryResultPage() {
   const success = delivery.status === "SUCCESS";
   const failed = delivery.status === "FAILED";
 
-  const handleRetry = async () => {
-    setRetrying(true);
-    try {
-      const next = await deliveryService.requestDelivery({
-        room: delivery.room,
-        item: delivery.item,
-      });
-      navigate(`/delivery/${next.id}`, { replace: true });
-    } catch (e) {
-      console.error("재시도 실패", e);
-      setRetrying(false);
-    }
-  };
-
   return (
     <section className="space-y-8 text-center">
       <div>
@@ -62,32 +46,19 @@ export default function DeliveryResultPage() {
           {delivery.room}호 · {delivery.item}
         </p>
         {failed && delivery.failReason && (
-          <p className="mt-2 text-sm text-red-600">사유: {delivery.failReason}</p>
+          <p className="mt-2 text-sm text-red-600">
+            사유: {formatFailReason(delivery.failReason)}
+          </p>
         )}
       </div>
 
-      <div className="flex flex-col gap-3">
-        {failed && (
-          <button
-            type="button"
-            onClick={handleRetry}
-            disabled={retrying}
-            className={
-              "w-full rounded-xl px-6 py-4 text-lg font-semibold text-white transition " +
-              (retrying ? "cursor-not-allowed bg-slate-300" : "bg-blue-800 hover:bg-blue-900")
-            }
-          >
-            {retrying ? "재요청 중..." : "다시 시도"}
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => navigate("/", { replace: true })}
-          className="w-full rounded-xl border border-slate-300 bg-white px-6 py-4 text-lg font-semibold text-slate-800 hover:bg-slate-50"
-        >
-          홈으로
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => navigate("/", { replace: true })}
+        className="w-full rounded-xl bg-blue-800 px-6 py-4 text-lg font-semibold text-white transition hover:bg-blue-900"
+      >
+        홈으로
+      </button>
     </section>
   );
 }
