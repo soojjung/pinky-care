@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="pc-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+    <linearGradient id="pc-silver" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#CBD5E1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded blue background -->
+  <rect width="64" height="64" rx="14" fill="url(#pc-bg)"/>
+
+  <!-- LiDAR scan arc (autonomy hint) -->
+  <path d="M14 12 Q32 4 50 12" stroke="#93C5FD" stroke-width="1.5" fill="none"
+        stroke-linecap="round" stroke-dasharray="1.5 3" opacity="0.85"/>
+
+  <!-- Antenna with pink LED -->
+  <line x1="32" y1="8" x2="32" y2="15" stroke="#E2E8F0" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="32" cy="7" r="2.6" fill="#FF6B9D"/>
+
+  <!-- Robot head/body: silver rounded rect -->
+  <rect x="10" y="15" width="44" height="38" rx="10" fill="url(#pc-silver)"/>
+  <rect x="12.5" y="17" width="39" height="3.5" rx="1.75" fill="#FFFFFF" opacity="0.6"/>
+
+  <!-- Side sensor pods -->
+  <circle cx="9" cy="34" r="3" fill="#E2E8F0" stroke="#94A3B8" stroke-width="0.6"/>
+  <circle cx="55" cy="34" r="3" fill="#E2E8F0" stroke="#94A3B8" stroke-width="0.6"/>
+
+  <!-- Face screen -->
+  <rect x="15" y="22" width="34" height="22" rx="5.5" fill="#0F172A"/>
+
+  <!-- Cyan LED eyes -->
+  <circle cx="24" cy="31" r="3.1" fill="#38BDF8"/>
+  <circle cx="40" cy="31" r="3.1" fill="#38BDF8"/>
+  <circle cx="24.9" cy="30.1" r="0.9" fill="#FFFFFF"/>
+  <circle cx="40.9" cy="30.1" r="0.9" fill="#FFFFFF"/>
+
+  <!-- Smile -->
+  <path d="M25 38 Q32 42 39 38" stroke="#38BDF8" stroke-width="2" fill="none" stroke-linecap="round"/>
+
+  <!-- Wheels (bottom, autonomous drive) -->
+  <rect x="14" y="52" width="10" height="6" rx="3" fill="#0F172A"/>
+  <rect x="40" y="52" width="10" height="6" rx="3" fill="#0F172A"/>
+</svg>

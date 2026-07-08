@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <linearGradient id="pc-bgpage" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="60%" stop-color="#EEF2FB"/>
+      <stop offset="100%" stop-color="#DBE5F5"/>
+    </linearGradient>
+    <linearGradient id="pc-body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#E2E8F0"/>
+      <stop offset="100%" stop-color="#94A3B8"/>
+    </linearGradient>
+    <linearGradient id="pc-bodySide" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#CBD5E1"/>
+      <stop offset="100%" stop-color="#64748B"/>
+    </linearGradient>
+    <linearGradient id="pc-screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+    <radialGradient id="pc-eye" cx="0.35" cy="0.35" r="0.7">
+      <stop offset="0%" stop-color="#7DD3FC"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </radialGradient>
+    <radialGradient id="pc-lidar" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#60A5FA" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#60A5FA" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="pc-shadow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0F172A" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#pc-bgpage)"/>
+
+  <!-- Faint grid dots (map feel) -->
+  <g fill="#CBD5E1" opacity="0.55">
+    <circle cx="80"  cy="80"  r="2"/>
+    <circle cx="180" cy="80"  r="2"/>
+    <circle cx="280" cy="80"  r="2"/>
+    <circle cx="380" cy="80"  r="2"/>
+    <circle cx="80"  cy="180" r="2"/>
+    <circle cx="180" cy="180" r="2"/>
+    <circle cx="280" cy="180" r="2"/>
+    <circle cx="1080" cy="80" r="2"/>
+    <circle cx="1080" cy="180" r="2"/>
+    <circle cx="1080" cy="280" r="2"/>
+    <circle cx="1080" cy="380" r="2"/>
+    <circle cx="1080" cy="480" r="2"/>
+    <circle cx="1080" cy="580" r="2"/>
+    <circle cx="980" cy="580" r="2"/>
+    <circle cx="880" cy="580" r="2"/>
+    <circle cx="780" cy="580" r="2"/>
+  </g>
+
+  <!-- Waypoint path (autonomous route) -->
+  <path d="M 90 540 L 250 540 L 250 470 L 470 470"
+        stroke="#3B82F6" stroke-width="4" fill="none"
+        stroke-linecap="round" stroke-dasharray="3 12" opacity="0.85"/>
+  <circle cx="90"  cy="540" r="9" fill="#3B82F6"/>
+  <circle cx="90"  cy="540" r="4" fill="#FFFFFF"/>
+  <circle cx="470" cy="470" r="9" fill="#3B82F6"/>
+  <circle cx="470" cy="470" r="4" fill="#FFFFFF"/>
+
+  <!-- LiDAR field around robot -->
+  <circle cx="300" cy="330" r="220" fill="url(#pc-lidar)"/>
+  <g stroke="#60A5FA" stroke-width="2" fill="none" opacity="0.55">
+    <circle cx="300" cy="330" r="150" stroke-dasharray="4 10"/>
+    <circle cx="300" cy="330" r="200" stroke-dasharray="4 14"/>
+  </g>
+
+  <!-- Robot shadow -->
+  <ellipse cx="300" cy="520" rx="150" ry="14" fill="url(#pc-shadow)"/>
+
+  <!-- Robot -->
+  <g transform="translate(150 150)">
+    <!-- Antenna -->
+    <line x1="150" y1="5" x2="150" y2="34" stroke="#94A3B8" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="150" cy="6" r="8" fill="#FF6B9D"/>
+    <circle cx="147" cy="4" r="2.5" fill="#FFFFFF" opacity="0.8"/>
+
+    <!-- LiDAR puck on top -->
+    <ellipse cx="150" cy="42" rx="46" ry="10" fill="#475569"/>
+    <ellipse cx="150" cy="40" rx="46" ry="10" fill="#94A3B8"/>
+    <ellipse cx="150" cy="38" rx="46" ry="8" fill="#0F172A"/>
+    <rect x="107" y="34" width="86" height="4" fill="#38BDF8" opacity="0.85"/>
+
+    <!-- Head -->
+    <rect x="45" y="50" width="210" height="150" rx="34" fill="url(#pc-body)"/>
+    <rect x="55" y="58" width="190" height="10" rx="5" fill="#FFFFFF" opacity="0.7"/>
+
+    <!-- Side sensor pods -->
+    <circle cx="38"  cy="125" r="14" fill="url(#pc-bodySide)"/>
+    <circle cx="38"  cy="125" r="5"  fill="#38BDF8"/>
+    <circle cx="262" cy="125" r="14" fill="url(#pc-bodySide)"/>
+    <circle cx="262" cy="125" r="5"  fill="#38BDF8"/>
+
+    <!-- Screen face -->
+    <rect x="68" y="82" width="164" height="98" rx="22" fill="url(#pc-screen)"/>
+    <rect x="72" y="86" width="156" height="18" rx="6" fill="#FFFFFF" opacity="0.06"/>
+
+    <!-- Eyes (LED) -->
+    <circle cx="112" cy="128" r="15" fill="url(#pc-eye)"/>
+    <circle cx="188" cy="128" r="15" fill="url(#pc-eye)"/>
+    <circle cx="116" cy="124" r="4"  fill="#FFFFFF"/>
+    <circle cx="192" cy="124" r="4"  fill="#FFFFFF"/>
+
+    <!-- Smile -->
+    <path d="M118 158 Q150 178 182 158" stroke="#38BDF8" stroke-width="8"
+          fill="none" stroke-linecap="round"/>
+
+    <!-- Neck -->
+    <rect x="118" y="200" width="64" height="22" rx="6" fill="url(#pc-bodySide)"/>
+
+    <!-- Body / chest -->
+    <rect x="60" y="222" width="180" height="110" rx="26" fill="url(#pc-body)"/>
+    <!-- Chest indicator: medical + -->
+    <g transform="translate(150 277)">
+      <circle r="26" fill="#EEF2FB" stroke="#3B82F6" stroke-width="3"/>
+      <rect x="-14" y="-4" width="28" height="8" rx="2" fill="#3B82F6"/>
+      <rect x="-4" y="-14" width="8" height="28" rx="2" fill="#3B82F6"/>
+    </g>
+
+    <!-- Wheels base (autonomous drive) -->
+    <rect x="60" y="332" width="180" height="24" rx="10" fill="url(#pc-bodySide)"/>
+    <circle cx="90"  cy="360" r="22" fill="#0F172A"/>
+    <circle cx="90"  cy="360" r="10" fill="#334155"/>
+    <circle cx="210" cy="360" r="22" fill="#0F172A"/>
+    <circle cx="210" cy="360" r="10" fill="#334155"/>
+  </g>
+
+  <!-- Title block -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif">
+    <text x="580" y="224" font-size="108" font-weight="800" fill="#0F172A" letter-spacing="-2">PinkyCare</text>
+    <text x="580" y="294" font-size="30" font-weight="700" fill="#3B82F6">A delivery robot for nurses</text>
+    <text x="580" y="348" font-size="22" font-weight="400" fill="#475569">A nurse picks a room and item,</text>
+    <text x="580" y="378" font-size="22" font-weight="400" fill="#475569">Pinky drives there autonomously,</text>
+    <text x="580" y="408" font-size="22" font-weight="400" fill="#475569">and YOLO auto-verifies the delivery.</text>
+
+    <!-- Tech chips -->
+    <g font-size="20" font-weight="600">
+      <g transform="translate(580 452)">
+        <rect x="0" y="0" width="96" height="40" rx="20" fill="#DBEAFE"/>
+        <text x="48" y="27" fill="#1D4ED8" text-anchor="middle">ROS2</text>
+      </g>
+      <g transform="translate(688 452)">
+        <rect x="0" y="0" width="96" height="40" rx="20" fill="#DBEAFE"/>
+        <text x="48" y="27" fill="#1D4ED8" text-anchor="middle">YOLO</text>
+      </g>
+      <g transform="translate(796 452)">
+        <rect x="0" y="0" width="122" height="40" rx="20" fill="#DBEAFE"/>
+        <text x="61" y="27" fill="#1D4ED8" text-anchor="middle">FastAPI</text>
+      </g>
+      <g transform="translate(930 452)">
+        <rect x="0" y="0" width="102" height="40" rx="20" fill="#DBEAFE"/>
+        <text x="51" y="27" fill="#1D4ED8" text-anchor="middle">React</text>
+      </g>
+    </g>
+  </g>
+</svg>
