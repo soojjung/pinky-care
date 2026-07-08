@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.broadcaster import broadcaster
+from app.services.frame_source import frame_cache
 from app.services.store import store
 
 
@@ -10,9 +11,11 @@ from app.services.store import store
 def _reset_state():
     store._items.clear()
     broadcaster._subscribers.clear()
+    frame_cache._latest.clear()
     yield
     store._items.clear()
     broadcaster._subscribers.clear()
+    frame_cache._latest.clear()
 
 
 @pytest.fixture

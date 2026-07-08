@@ -1,11 +1,15 @@
 """Pinky Pro 병동 배송 로봇의 Nav2 목적지 이동 및 도착 후 감시 노드.
 
 - 101/102/103호로 이동한 뒤 30초간 카메라 프레임을 백엔드로 업로드
+- 업로드가 끝나면 배송 상태를 폴링해 SUCCESS/FAILED 확정 시 LCD 표정 표시 후
+  간호실로 자율 복귀 (백엔드가 subprocess를 띄우던 v1 방식은 삭제됨)
 - '복귀' 상태로 실행되면 간호실 좌표로 이동하고, LCD에 배송 결과 표정 출력
+  (수동 호출용 백엔드 없이도 사용 가능한 진입점)
 """
-# pip install ultralytics cvbridge
+# pip install requests cvbridge
 import argparse
 import math
+import os
 import sys
 import time
 
@@ -20,7 +24,13 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import Image as RosImage
 
-BACKEND_URL = "http://localhost:8000"
+# 배포 시 시연자 노트북 IP로 환경변수 지정:
+#   BACKEND_URL=http://192.168.x.x:8000 python3 junction_1.py ...
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
+
+# 배송 결과 폴링 파라미터
+POLL_INTERVAL_SEC = 1.0     # 상태 조회 주기 (백엔드 부담 무시할 수준)
+MAX_POLL_SEC = 600          # 안전장치: 10분 넘게 terminal이 안 오면 강제 실패 처리
 
 # 실제 로봇에서 amcl_pose로 받아온 방별 목적지 좌표 (정규화 확인 완료)
 ROOMS = {
@@ -90,28 +100,44 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
         self.yolo_duration = 30.0  # yolo를 켜는 시간
         self.last_send_time = 0.0
 
+        # 결과 폴링 상태 (30초 창 종료 후 세팅됨)
+        self._poll_timer = None
+        self._poll_started_at = None
+
         if room_number == '복귀' and self.delivery_id:
             self.show_emotion_face()
 
     def show_emotion_face(self):
-        """백엔드에서 최종 배송 상태를 받아 LCD에 안내 문구와 표정 GIF를 재생한다."""
+        """(수동 호출용) 백엔드에서 최종 상태를 받아 LCD 표정 GIF를 재생한다.
+
+        v2에선 배송 종료 후 로봇이 폴링으로 스스로 결정하므로 이 함수는
+        ``--state 복귀`` 진입점에서만 쓰인다.
+        """
         try:
             res = requests.get(f"{BACKEND_URL}/deliveries/{self.delivery_id}").json()
             final_status = res.get("status")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.get_logger().error(f"백엔드 상태 조회 실패: {e}")
+            return
 
-            if final_status == "SUCCESS":
-                self.get_logger().info("배송 성공")
-                style = _SUCCESS_STYLE
-            else:
-                self.get_logger().info("배송 실패")
-                style = _FAILURE_STYLE
+        style = _SUCCESS_STYLE if final_status == "SUCCESS" else _FAILURE_STYLE
+        self.get_logger().info(f"상태={final_status} → LCD 표시")
+        self._show_emotion_with_style(style)
 
+    def _show_emotion_with_style(self, style):
+        """LCD에 배송 결과 문구와 표정 GIF 를 재생한다.
+
+        3초 문구 + GIF 시퀀스로 총 5~7초 정도 blocking. ROS2 executor에서 호출되지만
+        폴링 타이머가 이미 취소된 뒤라 다른 콜백 지연 우려 없음.
+        """
+        try:
             lcd = LCD()
-            text_img = _render_status_text(style["message"], style["background"], style["text"])
+            text_img = _render_status_text(
+                style["message"], style["background"], style["text"]
+            )
             lcd.img_show(text_img)
-            time.sleep(3.0)  # 3초간 대기하며 안내 문구 유지
+            time.sleep(3.0)
 
-            # 이어서 표정 GIF 재생
             gif = Image.open(style["gif"])
             for frame in ImageSequence.Iterator(gif):
                 lcd.img_show(frame)
@@ -119,7 +145,7 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
             lcd.clear()
             self.get_logger().info("간호실로 복귀합니다.")
         except Exception as e:  # pylint: disable=broad-exception-caught
-            self.get_logger().error(f"백엔드 전송 오류: {e}")
+            self.get_logger().error(f"LCD 표시 오류: {e}")
 
     def send_goal(self):
         """Nav2 액션 서버로 현재 room의 목적지 좌표를 전송한다."""
@@ -192,15 +218,16 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
                 )
 
     def camera_callback(self, msg):
-        """카메라 프레임을 초당 1장씩 JPEG로 인코딩해 백엔드에 업로드한다."""
+        """카메라 프레임을 초당 1장씩 JPEG로 인코딩해 백엔드에 업로드한다.
+
+        30초 창이 끝나면 프로세스를 죽이지 않고 결과 폴링으로 넘어간다.
+        """
         current_time = time.time()
 
-        # 30초 경과 시 카메라 구독 해제 및 종료
+        # 30초 경과 시 카메라 구독 해제 후 폴링 진입
         if current_time - self.yolo_start_time > self.yolo_duration:
-            self.get_logger().info('[타임아웃] 30초 제한 시간이 종료되었습니다. 전송을 멈춥니다.')
-            self.destroy_subscription(self.camera_sub)
-            cv2.destroyAllWindows()
-            rclpy.shutdown()  # 프로세스 완전 종료하여 자원 반환
+            self.get_logger().info('[30초 창 종료] 카메라 업로드 중단, 배송 결과 폴링 시작.')
+            self._end_camera_window()
             return
 
         # 초당 1프레임 체크 및 백엔드로 이미지 파일 업로드
@@ -222,12 +249,93 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
             except Exception as e:  # pylint: disable=broad-exception-caught
                 self.get_logger().error(f'이미지 처리 및 전송 중 오류: {e}')
 
+    def _end_camera_window(self):
+        """30초 창 종료 처리 — 카메라 정리 후 백엔드 상태 폴링 진입."""
+        if self.camera_sub is not None:
+            self.destroy_subscription(self.camera_sub)
+            self.camera_sub = None
+        cv2.destroyAllWindows()
+
+        if self.delivery_id is None:
+            # 배송 id 없으면 어차피 폴링해도 알 수 없으니 그냥 종료
+            self.get_logger().warn("delivery_id 없음 — 폴링 없이 종료")
+            rclpy.shutdown()
+            return
+
+        self._poll_started_at = time.time()
+        self._poll_timer = self.create_timer(POLL_INTERVAL_SEC, self._poll_tick)
+        self.get_logger().info(
+            f"[폴링] {POLL_INTERVAL_SEC:.0f}초 간격으로 배송 상태 확인 (최대 {MAX_POLL_SEC}s)"
+        )
+
+    def _poll_tick(self):
+        """1초마다 배송 상태를 확인해 후속 조치를 결정한다.
+
+        - SUCCESS/FAILED → 폴링 취소 + LCD 표정 + 간호실 복귀 Nav2 goal
+        - AWAITING_NURSE → 간호사 결정 대기, 계속 폴링
+        - VERIFYING/기타 non-terminal → 그대로 폴링 지속
+        - 통신 실패 → 로그만 남기고 다음 tick에서 재시도
+        - MAX_POLL_SEC 초과 → 실패 처리 후 강제 복귀 (배터리 · 안전 이유)
+        """
+        try:
+            res = requests.get(
+                f"{BACKEND_URL}/deliveries/{self.delivery_id}", timeout=3
+            ).json()
+            status = res.get("status")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.get_logger().warn(f"상태 조회 실패, 재시도: {e}")
+            return
+
+        elapsed = time.time() - self._poll_started_at
+        self.get_logger().info(f"[폴링] status={status} · elapsed={elapsed:.0f}s")
+
+        if status == "SUCCESS":
+            self._finish_polling_and_return(_SUCCESS_STYLE)
+            return
+        if status == "FAILED":
+            self._finish_polling_and_return(_FAILURE_STYLE)
+            return
+
+        # AWAITING_NURSE, VERIFYING 등은 계속 대기하되 안전장치 확인
+        if elapsed > MAX_POLL_SEC:
+            self.get_logger().error(
+                f"폴링 상한({MAX_POLL_SEC}s) 초과 — 실패 처리로 강제 복귀"
+            )
+            self._finish_polling_and_return(_FAILURE_STYLE)
+
+    def _finish_polling_and_return(self, style):
+        """폴링 종료 → LCD 표정 → 간호실 복귀."""
+        if self._poll_timer is not None:
+            self._poll_timer.cancel()
+            self._poll_timer = None
+
+        self._show_emotion_with_style(style)
+        self._send_return_goal()
+
+    def _send_return_goal(self):
+        """간호실 (0, 0) 좌표로 Nav2 goal 을 새로 전송한다."""
+        return_coords = ROOMS['복귀']
+        self.goal_x = return_coords['x']
+        self.goal_y = return_coords['y']
+        self.goal_qz = return_coords['qz']
+        self.goal_qw = return_coords['qw']
+        self.room_name = return_coords['name']
+        self.room_key = '복귀'
+        self._arrived = False       # feedback_callback 재사용을 위해 리셋
+        self._goal_handle = None
+        self.send_goal()
+
     def get_result_callback(self, _future):
-        """Nav2 액션이 종료됐을 때 정리 작업을 수행한다."""
+        """Nav2 액션이 종료됐을 때 정리 작업을 수행한다.
+
+        방 도착일 때는 카메라 감시가 이어지므로 shutdown 하지 않고,
+        복귀 도착일 때만 프로세스를 종료한다.
+        """
         del _future
         self.get_logger().info('네비게이션 종료.')
         cv2.destroyAllWindows()
-        rclpy.shutdown()
+        if self.room_key == '복귀':
+            rclpy.shutdown()
 
 
 def main():

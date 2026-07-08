@@ -67,42 +67,60 @@
 | `REQUESTED` | 배송 요청 접수 | 배송 요청 완료 |
 | `MOVING` | 로봇 이동 중 | 로봇 이동 중 |
 | `ARRIVED` | 목적지 도착 | 목적지 도착 |
-| `VERIFYING` | YOLO 판별 진행 중 | 배송 확인 중 |
+| `VERIFYING` | 판정 결과 반영 중 (0.3초 지연) | 배송 확인 중 |
+| `AWAITING_NURSE` | YOLO가 실패 판정 후 간호사 결정 대기 (v3 추가) | 확인 필요 (실패 알림) |
 | `SUCCESS` | 배송 성공 (terminal) | 배송 완료 |
 | `FAILED` | 배송 실패 (terminal) | 배송 실패 |
+
+### 3.3 실패 사유(`failReason`) 값 — YOLO 자동 판정
+
+| 코드 | 조건 |
+|---|---|
+| `X_CARD_DETECTED` | 30초 창 안에 실패(X) 카드만 확정됨 |
+| `TIMEOUT_NO_CARD` | 30초 창 안에 어떤 카드도 확정되지 않음 |
+| `AMBIGUOUS_BOTH_CARDS` | O와 X 모두 확정됨(모호) |
+
+간호사가 자유 텍스트로 `reason`을 덧붙이면 그 문자열이 우선 저장됨.
 
 ---
 
 ## 4. 상태 전이 다이어그램
 
 ```
-                 (POST /deliveries)
-                        │
-                        ▼
-                  ┌──────────┐
-                  │ REQUESTED│
-                  └──────────┘
-                        │  ROS2: PATCH robot-status {MOVING}
-                        ▼
-                  ┌──────────┐
-                  │  MOVING  │
-                  └──────────┘
-                        │  ROS2: PATCH robot-status {ARRIVED}
-                        ▼
-                  ┌──────────┐
-                  │ ARRIVED  │
-                  └──────────┘
-                        │  YOLO: PATCH verification (요청 수신 시 자동 진입)
-                        ▼
-                  ┌──────────┐
-                  │VERIFYING │
-                  └──────────┘
-                    │        │
-        SUCCESS ────┘        └──── FAILED (+ failReason)
-       (terminal)              (terminal)
+                    (POST /deliveries)
+                            │
+                            ▼
+                      ┌──────────┐
+                      │ REQUESTED│
+                      └──────────┘
+                            │  ROS2: PATCH robot-status {MOVING}
+                            ▼
+                      ┌──────────┐
+                      │  MOVING  │
+                      └──────────┘
+                            │  ROS2: PATCH robot-status {ARRIVED}
+                            ▼
+                      ┌──────────┐
+                      │ ARRIVED  │
+                      └──────────┘
+                            │  ARRIVED 진입 즉시 백엔드가 30초 YOLO 창 자동 시작
+                            ▼
+                      ┌──────────┐
+                      │VERIFYING │
+                      └──────────┘
+                       │           │
+        SUCCESS  ──────┘           └──────  AWAITING_NURSE  (+ failReason)
+       (terminal, 자동 복귀)                  │
+                                              │  간호사: POST /nurse-return-command
+                                              ▼
+                                          ┌────────┐
+                                          │ FAILED │  (terminal, + 복귀 스크립트 트리거)
+                                          └────────┘
 ```
 
-정의되지 않은 전이는 `409 Conflict`로 거부.
+- **`AWAITING_NURSE` 는 YOLO 자동 파이프라인에서만 나오는 상태.** 레거시
+  `PATCH /verification {result:FAILED}` 는 이 상태를 건너뛰고 바로 `FAILED`로 감.
+- 정의되지 않은 전이는 `409 Conflict`로 거부.
 
 ---
 
@@ -249,15 +267,62 @@ curl -X PATCH http://localhost:8000/deliveries/{id}/robot-status \
 
 ---
 
-## 7. YOLO 판별용 엔드포인트
+## 7. YOLO · 카메라 · 간호사 응답 엔드포인트
 
-### 7.1 배송 판별 결과 전송
+### 7.1 카메라 프레임 업로드 (ROS2 → 백엔드)
+
+```
+POST /deliveries/{id}/image
+Content-Type: multipart/form-data
+Body: image=<JPEG or PNG>
+```
+
+로봇이 `ARRIVED` 도달 후 30초 동안 초당 1회 카메라 프레임을 올리는 엔드포인트.
+백엔드는 배송별로 **최신 1장**만 캐시하고, 백그라운드 폴링 루프가 여기서 프레임을
+꺼내 YOLO에 넘긴다.
+
+**Response** — `204 No Content`
+
+**에러**
+- `404` — 존재하지 않는 배송 id
+- `422` — 이미지 body 가 비어 있음
+
+**동작 규칙**
+- 배송 상태와 무관하게 수락 (ARRIVED 이전/이후 프레임은 그냥 캐시에 덮어씀)
+- 배송이 terminal 상태로 도달하면 캐시 자동 삭제
+- ROS2 팀 참고: 카메라 콜백에서 `cv2.imencode('.jpg', frame)` 후 requests로 POST
+
+**curl**
+```bash
+curl -X POST http://localhost:8000/deliveries/{id}/image \
+  -F "image=@frame.jpg"
+```
+
+### 7.2 자동 판정 파이프라인 (내부 동작)
+
+`ARRIVED` 상태로 전이하는 순간 백엔드가 백그라운드 태스크로 30초 폴링을 시작.
+
+1. 매 초 캐시된 최신 프레임을 꺼내 YOLO 모델에 넘김
+2. `conf ≥ 0.5` 인 라벨을 창(30초) 안에 누적
+3. `MIN_CONFIRMATIONS(=3)` 이상 감지된 라벨만 "확정" 처리
+4. 30초 창 종료 시 규칙에 따라 최종 outcome 결정:
+   - `success` 확정만 → **SUCCESS**
+   - `failure` 확정만 → **FAILED / X_CARD_DETECTED**
+   - 둘 다 확정 → **FAILED / AMBIGUOUS_BOTH_CARDS**
+   - 아무것도 확정 안 됨 → **FAILED / TIMEOUT_NO_CARD**
+
+성공: 즉시 `SUCCESS`로 전이하고 자동 복귀 트리거.
+실패: `AWAITING_NURSE`로 전이 후 §7.4 명령을 기다림 (자동 복귀 안 함).
+
+### 7.3 배송 판별 결과 전송 (레거시 · 수동 override)
 
 ```
 PATCH /deliveries/{id}/verification
 ```
 
-YOLO 추론 결과를 백엔드에 전달. terminal 상태로 전이됨.
+YOLO 자동 파이프라인 이전에 쓰던 수동 경로. 지금은 데모용 override 나 시연 리허설
+용도로만 사용. `ARRIVED` 상태에서만 허용되며, 실패도 곧바로 `FAILED`로 전이한다
+(자동 파이프라인과 달리 `AWAITING_NURSE`를 건너뜀).
 
 **Request Body**
 
@@ -275,18 +340,41 @@ YOLO 추론 결과를 백엔드에 전달. terminal 상태로 전이됨.
 
 **에러**
 - `404` — 존재하지 않는 id
-- `409` — 현재 상태가 `ARRIVED`가 아님
+- `409` — 현재 상태가 `ARRIVED`가 아님 (자동 파이프라인이 이미 넘어간 후 등)
 - `422` — `result` 값 미허용, 또는 `FAILED`인데 `reason` 누락
 
-**동작 규칙**
-- 호출 시점의 상태는 `ARRIVED`여야 함
-- 서버는 수신 즉시 `ARRIVED → VERIFYING` 이벤트 1건을 SSE에 발송한 후, 짧은 딜레이(또는 즉시) 뒤 `VERIFYING → 결과` 이벤트를 발송하여 프론트가 "배송 확인 중" 단계를 볼 수 있게 함
+### 7.4 간호사 복귀 명령 (실패 후 결정)
+
+```
+POST /deliveries/{id}/nurse-return-command
+```
+
+실패 알림을 본 간호사가 "바로 복귀" 또는 "대기해, 내가 갈게" → 도착 후
+"복귀 보내기"를 누를 때 호출. 상태를 `AWAITING_NURSE → FAILED`로 전이하고
+복귀 스크립트를 트리거한다.
+
+**Request Body**
+```json
+{ "choice": "IMMEDIATE" | "AFTER_ARRIVAL", "reason": "환자 부재" }
+```
+
+- `choice` (선택, 기본 `IMMEDIATE`) — 감사 로그용
+  - `IMMEDIATE`: "바로 복귀" 버튼 → 간호사가 병실에 안 감
+  - `AFTER_ARRIVAL`: "대기해, 내가 갈게" 후 도착해서 "복귀 보내기" 누름
+- `reason` (선택) — YOLO 사유 위에 간호사 자유 텍스트를 덧씀
+
+**Response `200 OK`** — 갱신된 `Delivery` (status=FAILED)
+
+**에러**
+- `404` — 존재하지 않는 id
+- `409` — 현재 상태가 `AWAITING_NURSE` 가 아님
+- `422` — `choice` 값 미허용
 
 **curl**
 ```bash
-curl -X PATCH http://localhost:8000/deliveries/{id}/verification \
+curl -X POST http://localhost:8000/deliveries/{id}/nurse-return-command \
   -H 'Content-Type: application/json' \
-  -d '{"result":"FAILED","reason":"물품 인식 실패"}'
+  -d '{"choice":"AFTER_ARRIVAL","reason":"환자 부재"}'
 ```
 
 ---
@@ -332,12 +420,13 @@ class Item(str, Enum):
     MED = "약"; DIAPER = "기저귀"; GLUCOSE = "혈당측정키트"; WIPE = "물티슈"
 
 class Status(str, Enum):
-    REQUESTED = "REQUESTED"
-    MOVING    = "MOVING"
-    ARRIVED   = "ARRIVED"
-    VERIFYING = "VERIFYING"
-    SUCCESS   = "SUCCESS"
-    FAILED    = "FAILED"
+    REQUESTED       = "REQUESTED"
+    MOVING          = "MOVING"
+    ARRIVED         = "ARRIVED"
+    VERIFYING       = "VERIFYING"
+    AWAITING_NURSE  = "AWAITING_NURSE"   # v3
+    SUCCESS         = "SUCCESS"
+    FAILED          = "FAILED"
 
 class DeliveryOut(Base):
     id: str
@@ -357,3 +446,4 @@ SSE 구현은 `sse-starlette`의 `EventSourceResponse` 사용을 권장.
 | 날짜 | 버전 | 내용 |
 |---|---|---|
 | 2026-07-06 | v1 | 초안 작성 |
+| 2026-07-08 | v2 | YOLO 자동 파이프라인 통합: `POST /image`, ARRIVED 자동 트리거, `AWAITING_NURSE` 상태, `POST /nurse-return-command`, `failReason` enum 3종 (X_CARD_DETECTED · TIMEOUT_NO_CARD · AMBIGUOUS_BOTH_CARDS). 레거시 `PATCH /verification` 은 유지. |

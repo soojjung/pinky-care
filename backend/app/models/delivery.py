@@ -28,8 +28,15 @@ class Status(str, Enum):
     MOVING = "MOVING"
     ARRIVED = "ARRIVED"
     VERIFYING = "VERIFYING"
+    AWAITING_NURSE = "AWAITING_NURSE"  # YOLO가 FAILED 판정 후, 간호사 결정 대기
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
+
+
+class NurseChoice(str, Enum):
+    # 간호사가 실패 알림 후 어떻게 대응했는지 기록 (감사·통계 용도)
+    IMMEDIATE = "IMMEDIATE"          # "바로 복귀"
+    AFTER_ARRIVAL = "AFTER_ARRIVAL"  # "대기해, 내가 갈게" → 도착 후 "복귀 보내기"
 
 
 class RobotStatus(str, Enum):
@@ -70,6 +77,16 @@ class VerificationUpdate(BaseModel):
         if self.result == VerificationResult.FAILED and not self.reason:
             raise ValueError("reason is required when result is FAILED")
         return self
+
+
+class NurseReturnCommand(BaseModel):
+    """간호사가 실패 알림에 응답할 때 보내는 페이로드.
+
+    - choice: 어떤 버튼을 눌렀는지 (감사 기록). 없으면 IMMEDIATE로 간주.
+    - reason: YOLO가 붙인 사유 위에 간호사가 덧붙이는 자유 텍스트 (선택).
+    """
+    choice: NurseChoice = NurseChoice.IMMEDIATE
+    reason: str | None = None
 
 
 class Delivery(CamelBase):
