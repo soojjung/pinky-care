@@ -23,7 +23,12 @@ detect_ox.py — 학습된 YOLO로 웹캠 실시간 O/X 판별
     python detect_ox.py --cam 0
 
     # 확정되면 백엔드 배송 판별 엔드포인트로 자동 보고
+    # (기본 30초 창 종료 시 최종 판정 1회 보고. 창 안에서 O/X 모두 확정되면
+    #  AMBIGUOUS, 아무것도 확정 안 되면 TIMEOUT_NO_CARD 로 보고)
     python detect_ox.py --post-to <deliveryId> --api http://localhost:8000
+
+    # 무한 루프 모드 (개발/테스트용, 확정 즉시 보고)
+    python detect_ox.py --post-to <id> --window-seconds 0
 
     # 디스플레이 없는 환경(SSH 등) — 창 없이 콘솔에만 판정 출력
     python detect_ox.py --no-window
@@ -48,10 +53,16 @@ from ultralytics import YOLO
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WEIGHTS = REPO_ROOT / "backend" / "models" / "pinky_yolo_v1.pt"
 
-CAM_INDEX     = 4      # 실제 웹캠 인덱스 (--probe로 확인)
-CONF          = 0.5    # 신뢰도 임계값 (안 잡히면 0.25로 낮추기)
-IMGSZ         = 640
-STABLE_FRAMES = 5      # 같은 라벨이 이만큼 연속되면 '확정'
+CAM_INDEX      = 4      # 실제 웹캠 인덱스 (--probe로 확인)
+CONF           = 0.5    # 신뢰도 임계값 (안 잡히면 0.25로 낮추기)
+IMGSZ          = 640
+STABLE_FRAMES  = 5      # 같은 라벨이 이만큼 연속되면 '확정'
+WINDOW_SECONDS = 30     # 판정 창 길이 (초). 0 이하이면 창 없이 무한 루프.
+
+# 창 종료 시 사용되는 실패 사유 코드 (backend FailReason enum과 동일 문자열 유지)
+FAIL_REASON_X_CARD    = "X_CARD_DETECTED"
+FAIL_REASON_TIMEOUT   = "TIMEOUT_NO_CARD"
+FAIL_REASON_AMBIGUOUS = "AMBIGUOUS_BOTH_CARDS"
 
 # 라벨 → (표시 기호, 한글, 색 BGR)
 VERDICT_STYLE = {
@@ -85,16 +96,16 @@ def probe_cameras(max_index=6):
     print("probe/ 폴더의 이미지를 열어 실제 웹캠 화면이 나온 인덱스를 확인하세요.")
 
 
-def post_verification(api_base, delivery_id, label):
+def post_verification(api_base, delivery_id, result, reason=None):
     """확정된 판정을 백엔드 verification 엔드포인트로 보고한다.
 
-    성공 → {result: SUCCESS}, 실패 → {result: FAILED, reason: ...}.
-    (실패 시 reason은 백엔드에서 필수)
+    - result: "SUCCESS" 또는 "FAILED"
+    - reason: FAILED일 때 필수. FailReason enum 문자열(X_CARD_DETECTED /
+      TIMEOUT_NO_CARD / AMBIGUOUS_BOTH_CARDS) 중 하나.
     """
-    result = "SUCCESS" if label == "success" else "FAILED"
     body = {"result": result}
     if result == "FAILED":
-        body["reason"] = "YOLO: 실패(X) 카드 감지"
+        body["reason"] = reason or FAIL_REASON_X_CARD
 
     url = f"{api_base.rstrip('/')}/deliveries/{delivery_id}/verification"
     req = urllib.request.Request(
@@ -105,13 +116,37 @@ def post_verification(api_base, delivery_id, label):
     )
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
-            print(f"→ 백엔드 보고 완료: {result} (HTTP {resp.status})")
+            suffix = f" reason={reason}" if reason else ""
+            print(f"→ 백엔드 보고 완료: {result}{suffix} (HTTP {resp.status})")
             return True
     except urllib.error.HTTPError as e:
         print(f"→ 백엔드 보고 실패: HTTP {e.code} {e.read().decode(errors='replace')[:200]}")
     except urllib.error.URLError as e:
         print(f"→ 백엔드 연결 실패: {e.reason} ({url})")
     return False
+
+
+def decide_window_verdict(confirmed_labels):
+    """30초 창 안에 확정된 라벨 집합에서 최종 판정을 도출한다.
+
+    - {"success"} only               → SUCCESS
+    - {"failure"} only               → FAILED / X_CARD_DETECTED
+    - {"success", "failure"} both    → FAILED / AMBIGUOUS_BOTH_CARDS
+    - 비어 있음                       → FAILED / TIMEOUT_NO_CARD
+
+    Returns:
+        (result, reason) — result는 "SUCCESS"/"FAILED", reason은 FAILED일 때 사유 코드.
+    """
+    has_success = "success" in confirmed_labels
+    has_failure = "failure" in confirmed_labels
+
+    if has_success and has_failure:
+        return "FAILED", FAIL_REASON_AMBIGUOUS
+    if has_success:
+        return "SUCCESS", None
+    if has_failure:
+        return "FAILED", FAIL_REASON_X_CARD
+    return "FAILED", FAIL_REASON_TIMEOUT
 
 
 def top_detection(result, names):
@@ -163,7 +198,7 @@ def draw_overlay(frame, label, conf, confirmed, fps):
 
 
 def run(weights, cam_index, conf, stable_frames, show_window,
-        post_to, api_base):
+        post_to, api_base, window_seconds):
     weights = Path(weights)
     if not weights.exists():
         raise FileNotFoundError(
@@ -184,15 +219,19 @@ def run(weights, cam_index, conf, stable_frames, show_window,
     for _ in range(10):   # 워밍업 (초기 프레임은 노출 자동조정 중)
         cap.read()
 
+    windowed = window_seconds > 0
+    mode_desc = f"창 {window_seconds}s 창 판정" if windowed else "무한 루프"
     print(f"실시간 판별 시작 (cam={cam_index}, conf={conf}, "
-          f"확정={stable_frames}프레임 연속)")
+          f"확정={stable_frames}프레임 연속, 모드={mode_desc})")
     if not show_window:
         print("창 없음(--no-window): 판정이 바뀔 때만 콘솔에 출력합니다. Ctrl+C로 종료.")
 
-    run_label = None      # 현재 연속되고 있는 라벨
-    run_count = 0         # 그 라벨의 연속 프레임 수
-    confirmed_label = None  # 이미 확정·보고한 라벨 (중복 보고 방지)
-    tick_prev = cv2.getTickCount()
+    run_label = None          # 현재 연속되고 있는 라벨
+    run_count = 0             # 그 라벨의 연속 프레임 수
+    confirmed_label = None    # 최근 확정된 라벨 (콘솔 중복 출력 방지)
+    window_confirmed = set()  # 창 안에서 한 번이라도 확정된 라벨 집합
+    window_start = cv2.getTickCount()
+    tick_prev = window_start
 
     try:
         while True:
@@ -214,14 +253,30 @@ def run(weights, cam_index, conf, stable_frames, show_window,
 
             confirmed = run_count >= stable_frames
 
-            # 확정 순간(라벨이 새로 확정될 때) 한 번만 처리.
-            # 같은 라벨을 반복 보고하지 않도록 confirmed_label로 중복 방지.
+            # 확정 순간 한 번만 콘솔에 출력. 창 판정 모드에서는 즉시 보고하지 않고,
+            # 창 안에 등장한 라벨을 window_confirmed에 누적한 뒤 창 종료 시 최종 결정.
             if confirmed and run_label != confirmed_label:
                 confirmed_label = run_label
                 symbol, korean, _ = VERDICT_STYLE[run_label]
                 print(f"확정: {symbol} {korean} (conf={det_conf:.2f})")
-                if post_to:
-                    post_verification(api_base, post_to, run_label)
+                window_confirmed.add(run_label)
+                if not windowed and post_to:
+                    # 무한 루프 모드: 즉시 보고 (기존 동작 유지)
+                    if run_label == "success":
+                        post_verification(api_base, post_to, "SUCCESS")
+                    else:
+                        post_verification(api_base, post_to, "FAILED", FAIL_REASON_X_CARD)
+
+            # 창 종료 검사
+            if windowed:
+                elapsed = (cv2.getTickCount() - window_start) / cv2.getTickFrequency()
+                if elapsed >= window_seconds:
+                    result, reason = decide_window_verdict(window_confirmed)
+                    print(f"[창 종료] {elapsed:.1f}s 경과 · 확정 라벨={sorted(window_confirmed) or '없음'} "
+                          f"→ {result}" + (f" ({reason})" if reason else ""))
+                    if post_to:
+                        post_verification(api_base, post_to, result, reason)
+                    break
 
             # FPS
             tick_now = cv2.getTickCount()
@@ -269,10 +324,12 @@ if __name__ == "__main__":
                         help="확정 시 판정을 보고할 배송 id (백엔드 verification)")
     parser.add_argument("--api", default="http://localhost:8000",
                         help="백엔드 base URL (기본: http://localhost:8000)")
+    parser.add_argument("--window-seconds", type=int, default=WINDOW_SECONDS,
+                        help=f"판정 창 길이(초). 0 이하이면 무한 루프 (기본: {WINDOW_SECONDS})")
     args = parser.parse_args()
 
     if args.probe:
         probe_cameras()
     else:
         run(args.weights, args.cam, args.conf, args.stable,
-            args.window, args.post_to, args.api)
+            args.window, args.post_to, args.api, args.window_seconds)

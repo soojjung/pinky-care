@@ -42,6 +42,13 @@ class VerificationResult(str, Enum):
     FAILED = "FAILED"
 
 
+class FailReason(str, Enum):
+    # YOLO가 자동 판정한 실패 사유. 간호사 자유 텍스트 사유는 별도로 허용.
+    X_CARD_DETECTED = "X_CARD_DETECTED"           # 실패(X) 카드가 확정됨
+    TIMEOUT_NO_CARD = "TIMEOUT_NO_CARD"           # 30초 창 안에 어떤 카드도 확정되지 않음
+    AMBIGUOUS_BOTH_CARDS = "AMBIGUOUS_BOTH_CARDS" # O·X 둘 다 확정됨(모호)
+
+
 TERMINAL_STATUSES: frozenset[Status] = frozenset({Status.SUCCESS, Status.FAILED})
 
 
