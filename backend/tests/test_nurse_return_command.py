@@ -1,6 +1,4 @@
 """POST /deliveries/{id}/nurse-return-command — 실패 후 간호사 결정 API."""
-from unittest.mock import patch
-
 from fastapi.testclient import TestClient
 
 from app.models.delivery import Status
@@ -20,16 +18,14 @@ def test_immediate_return_transitions_awaiting_to_failed(
 ) -> None:
     _force_awaiting_nurse(arrived_id)
 
-    with patch("app.api.deliveries.subprocess.Popen") as mock_popen:
-        r = client.post(
-            f"/deliveries/{arrived_id}/nurse-return-command",
-            json={"choice": "IMMEDIATE"},
-        )
+    r = client.post(
+        f"/deliveries/{arrived_id}/nurse-return-command",
+        json={"choice": "IMMEDIATE"},
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "FAILED"
     assert body["failReason"] == "X_CARD_DETECTED"  # YOLO 사유 유지
-    mock_popen.assert_called_once()  # 복귀 스크립트 트리거됨
 
 
 def test_after_arrival_also_transitions_and_returns(
@@ -37,11 +33,10 @@ def test_after_arrival_also_transitions_and_returns(
 ) -> None:
     _force_awaiting_nurse(arrived_id)
 
-    with patch("app.api.deliveries.subprocess.Popen"):
-        r = client.post(
-            f"/deliveries/{arrived_id}/nurse-return-command",
-            json={"choice": "AFTER_ARRIVAL"},
-        )
+    r = client.post(
+        f"/deliveries/{arrived_id}/nurse-return-command",
+        json={"choice": "AFTER_ARRIVAL"},
+    )
     assert r.status_code == 200
     assert r.json()["status"] == "FAILED"
 
@@ -51,11 +46,10 @@ def test_reason_override_replaces_yolo_reason(
 ) -> None:
     _force_awaiting_nurse(arrived_id, reason="X_CARD_DETECTED")
 
-    with patch("app.api.deliveries.subprocess.Popen"):
-        r = client.post(
-            f"/deliveries/{arrived_id}/nurse-return-command",
-            json={"choice": "AFTER_ARRIVAL", "reason": "환자 부재"},
-        )
+    r = client.post(
+        f"/deliveries/{arrived_id}/nurse-return-command",
+        json={"choice": "AFTER_ARRIVAL", "reason": "환자 부재"},
+    )
     assert r.status_code == 200
     assert r.json()["failReason"] == "환자 부재"
 
@@ -63,11 +57,10 @@ def test_reason_override_replaces_yolo_reason(
 def test_default_choice_is_immediate(client: TestClient, arrived_id: str) -> None:
     _force_awaiting_nurse(arrived_id)
 
-    with patch("app.api.deliveries.subprocess.Popen"):
-        r = client.post(
-            f"/deliveries/{arrived_id}/nurse-return-command",
-            json={},
-        )
+    r = client.post(
+        f"/deliveries/{arrived_id}/nurse-return-command",
+        json={},
+    )
     assert r.status_code == 200
     assert r.json()["status"] == "FAILED"
 

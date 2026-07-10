@@ -7,7 +7,6 @@ import asyncio
 from unittest.mock import patch
 
 import httpx
-import pytest
 
 from app.main import app
 from app.models.delivery import FailReason, Status, VerificationResult
@@ -40,12 +39,6 @@ async def _stub_timeout(*_a, **_kw):
     return yolo.YoloOutcome(VerificationResult.FAILED, FailReason.TIMEOUT_NO_CARD)
 
 
-@pytest.fixture
-def _mock_return_process():
-    with patch("app.api.deliveries.subprocess.Popen") as m:
-        yield m
-
-
 async def _make_arrived_delivery(client: httpx.AsyncClient) -> str:
     r = await client.post("/deliveries", json={"room": "102", "item": "약"})
     delivery_id = r.json()["id"]
@@ -58,8 +51,8 @@ async def _make_arrived_delivery(client: httpx.AsyncClient) -> str:
     return delivery_id
 
 
-async def test_arrived_triggers_yolo_and_success_completes(_mock_return_process):
-    """YOLO가 SUCCESS 반환 → 상태 SUCCESS + 복귀 스크립트 트리거."""
+async def test_arrived_triggers_yolo_and_success_completes():
+    """YOLO가 SUCCESS 반환 → 상태 SUCCESS (로봇은 이 terminal 상태를 보고 복귀)."""
     transport = httpx.ASGITransport(app=app)
     with patch("app.api.deliveries.yolo.wait_for_patient_response", _stub_success):
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -69,11 +62,10 @@ async def test_arrived_triggers_yolo_and_success_completes(_mock_return_process)
     delivery = store.get(delivery_id)
     assert delivery.status == Status.SUCCESS
     assert delivery.fail_reason is None
-    _mock_return_process.assert_called()
 
 
-async def test_arrived_triggers_yolo_and_failure_awaits_nurse(_mock_return_process):
-    """YOLO가 FAILED 반환 → 상태 AWAITING_NURSE, 복귀 스크립트 아직 안 뜸."""
+async def test_arrived_triggers_yolo_and_failure_awaits_nurse():
+    """YOLO가 FAILED 반환 → 상태 AWAITING_NURSE (non-terminal, 로봇은 계속 대기)."""
     transport = httpx.ASGITransport(app=app)
     with patch("app.api.deliveries.yolo.wait_for_patient_response", _stub_x_card):
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -83,11 +75,10 @@ async def test_arrived_triggers_yolo_and_failure_awaits_nurse(_mock_return_proce
     delivery = store.get(delivery_id)
     assert delivery.status == Status.AWAITING_NURSE
     assert delivery.fail_reason == FailReason.X_CARD_DETECTED.value
-    _mock_return_process.assert_not_called()  # 실패는 간호사 결정을 기다림
 
 
-async def test_awaiting_nurse_then_command_triggers_return(_mock_return_process):
-    """AWAITING_NURSE → 간호사가 nurse-return-command → FAILED + 복귀."""
+async def test_awaiting_nurse_then_command_triggers_return():
+    """AWAITING_NURSE → 간호사가 nurse-return-command → FAILED."""
     transport = httpx.ASGITransport(app=app)
     with patch("app.api.deliveries.yolo.wait_for_patient_response", _stub_timeout):
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -103,4 +94,3 @@ async def test_awaiting_nurse_then_command_triggers_return(_mock_return_process)
     body = r.json()
     assert body["status"] == "FAILED"
     assert body["failReason"] == "환자 부재"
-    _mock_return_process.assert_called()  # 이 시점에 복귀 트리거

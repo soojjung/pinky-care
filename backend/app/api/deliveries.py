@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import subprocess
 
 from fastapi import APIRouter, HTTPException, Response, UploadFile
 from sse_starlette.sse import EventSourceResponse
@@ -34,9 +33,6 @@ _VERIFYING_TO_RESULT_DELAY_S = 0.3
 _SSE_PING_INTERVAL_S = 30
 # AWAITING_NURSE 에서 간호사 응답이 없을 때 로봇이 무한 대기하지 않도록 하는 상한 (시나리오 v3 §4)
 _AWAITING_NURSE_TIMEOUT_S = 300.0
-_RETURN_SCRIPT = os.path.expanduser(
-    "~/pinky_pro/src/pinky_pro/pinky_navigation/scripts/junction_1.py"
-)
 
 # delivery_id → 진행 중인 5분 타임아웃 태스크
 _nurse_timeouts: dict[str, asyncio.Task] = {}
@@ -59,16 +55,6 @@ def _invalid_transition(current: Status, target: Status) -> HTTPException:
     )
 
 
-def _trigger_return_process(delivery_id: str) -> None:
-    """복귀 스크립트를 백그라운드 subprocess로 띄운다.
-
-    성공·실패 어느 쪽이든 로봇이 최종 결정된 뒤 호출한다.
-    """
-    subprocess.Popen(
-        ["python3", _RETURN_SCRIPT, "--state", "복귀", "--delivery-id", delivery_id]
-    )
-
-
 async def _expire_nurse_wait(delivery_id: str) -> None:
     """5분 안에 간호사 응답이 없으면 FAILED 로 확정하고 로봇을 복귀시킨다.
 
@@ -82,10 +68,13 @@ async def _expire_nurse_wait(delivery_id: str) -> None:
         if delivery is None or delivery.status != Status.AWAITING_NURSE:
             return
 
-        log.info("간호사 응답 없이 %.0f초 경과 → 자동 복귀 (%s)", _AWAITING_NURSE_TIMEOUT_S, delivery_id)
+        log.info(
+            "간호사 응답 없이 %.0f초 경과 → FAILED 확정 (%s). 복귀는 로봇이 폴링으로 수행",
+            _AWAITING_NURSE_TIMEOUT_S,
+            delivery_id,
+        )
         delivery.status = Status.FAILED  # fail_reason 은 YOLO 가 붙인 사유를 그대로 유지
         broadcaster.publish(delivery)
-        _trigger_return_process(delivery_id)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001
@@ -127,7 +116,6 @@ async def _complete_verification_legacy(
         delivery.status = Status.FAILED
         delivery.fail_reason = reason
     broadcaster.publish(delivery)
-    _trigger_return_process(delivery.id)
 
 
 async def _run_yolo_pipeline(delivery_id: str) -> None:
@@ -171,7 +159,6 @@ async def _run_yolo_pipeline(delivery_id: str) -> None:
             delivery.status = Status.SUCCESS
             delivery.fail_reason = None
             broadcaster.publish(delivery)
-            _trigger_return_process(delivery.id)
         else:
             delivery.status = Status.AWAITING_NURSE
             delivery.fail_reason = reason_value
@@ -333,11 +320,14 @@ async def submit_verification(delivery_id: str, payload: VerificationUpdate) -> 
 async def nurse_return_command(
     delivery_id: str, payload: NurseReturnCommand
 ) -> Delivery:
-    """간호사가 실패 알림에 응답해서 로봇을 복귀시키는 명령.
+    """간호사가 실패 알림에 응답해서 배송을 FAILED 로 확정하는 명령.
 
     - "바로 복귀" 버튼        → choice=IMMEDIATE (기본), 즉시 복귀
     - "대기해, 내가 갈게" 후    → choice=AFTER_ARRIVAL, 병실에서 처리 후 호출
     - reason으로 자유 텍스트 사유를 덧붙이면 fail_reason 을 덮어씀
+
+    복귀 주행 자체는 백엔드가 시키지 않는다. 로봇이 ``GET /deliveries/{id}`` 를
+    폴링하다가 terminal 상태를 보면 스스로 표정을 띄우고 간호실로 복귀한다.
     """
     delivery = store.get(delivery_id)
     if delivery is None:
@@ -351,8 +341,6 @@ async def nurse_return_command(
     if payload.reason:
         delivery.fail_reason = payload.reason
     broadcaster.publish(delivery)
-
-    _trigger_return_process(delivery_id)
     return delivery
 
 

@@ -3,8 +3,6 @@
 - 102/103/104호로 이동한 뒤 30초간 카메라 프레임을 백엔드로 업로드
 - 업로드가 끝나면 배송 상태를 폴링해 SUCCESS/FAILED 확정 시 표정 표시 후
   간호실(101호)로 자율 복귀 (백엔드가 subprocess를 띄우던 v1 방식은 삭제됨)
-- '복귀' 상태로 실행되면 간호실 좌표로 이동하고, 배송 결과 표정 출력
-  (수동 호출용 백엔드 없이도 사용 가능한 진입점)
 
 표정 표시는 LCD 를 직접 제어하지 않고 로봇의 emotion_server(set_emotion 서비스)에
 요청만 보낸다. (nav_goal_and_check_node.py 와 동일 방식 — GPIO 충돌 방지)
@@ -98,26 +96,6 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
                 'emotion_server 의 set_emotion 서비스가 아직 안 떠 있습니다. '
                 '(emotion_server 를 먼저 실행했는지 확인)'
             )
-
-        if room_number == '복귀' and self.delivery_id:
-            self.show_emotion_face()
-
-    def show_emotion_face(self):
-        """(수동 호출용) 백엔드에서 최종 상태를 받아 표정을 표시한다.
-
-        v2에선 배송 종료 후 로봇이 폴링으로 스스로 결정하므로 이 함수는
-        ``--state 복귀`` 진입점에서만 쓰인다.
-        """
-        try:
-            res = requests.get(f"{BACKEND_URL}/deliveries/{self.delivery_id}").json()
-            final_status = res.get("status")
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            self.get_logger().error(f"백엔드 상태 조회 실패: {e}")
-            return
-
-        flag = "SUCCESS" if final_status == "SUCCESS" else "FAILURE"
-        self.get_logger().info(f"상태={final_status} → 표정 {flag}")
-        self.set_emotion(flag)
 
     def set_emotion(self, flag):
         """emotion_server 에 표정 요청을 보낸다. flag: 'NORMAL'|'SUCCESS'|'FAILURE'.
@@ -411,18 +389,14 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
 def main():
     """CLI 인자를 파싱해 NavGoalNode를 실행한다."""
     parser = argparse.ArgumentParser(description='목적지 입력 및 도착 확인 프로그램')
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--room-number', type=int, choices=[102, 103, 104],
-                       help='방 번호를 입력하세요')
-    group.add_argument('--state', type=str, choices=['복귀'],
-                       help='로봇 복귀를 원할 시 "복귀"를 입력해주세요')
+    parser.add_argument('--room-number', type=int, choices=[102, 103, 104],
+                        required=True, help='방 번호를 입력하세요')
     parser.add_argument('--delivery-id', type=str, default=None,
                         help='백엔드 배송 ID')
     args, _ = parser.parse_known_args(sys.argv[1:])
 
     rclpy.init()
-    target_key = '복귀' if args.state == '복귀' else args.room_number
-    node = NavGoalNode(target_key, delivery_id=args.delivery_id)
+    node = NavGoalNode(args.room_number, delivery_id=args.delivery_id)
     node.send_goal()
     try:
         rclpy.spin(node)

@@ -1,4 +1,4 @@
-"""AWAITING_NURSE 5분 대기 상한 — 간호사 무응답 시 자동 복귀."""
+"""AWAITING_NURSE 5분 대기 상한 — 간호사 무응답 시 자동으로 FAILED 확정."""
 import asyncio
 from unittest.mock import patch
 
@@ -26,12 +26,13 @@ def _fast_timeout():
 
 
 async def test_timeout_transitions_awaiting_to_failed(awaiting_delivery: Delivery) -> None:
-    with patch("app.api.deliveries.subprocess.Popen") as mock_popen:
+    with patch("app.api.deliveries.broadcaster.publish") as mock_publish:
         await deliveries._expire_nurse_wait(awaiting_delivery.id)
 
     assert awaiting_delivery.status == Status.FAILED
     assert awaiting_delivery.fail_reason == "X_CARD_DETECTED"  # YOLO 사유 유지
-    mock_popen.assert_called_once()  # 로봇 자동 복귀
+    # 로봇은 이 SSE/폴링 결과를 보고 스스로 복귀한다
+    mock_publish.assert_called_once_with(awaiting_delivery)
 
 
 async def test_timeout_is_noop_when_nurse_already_responded(
@@ -41,17 +42,17 @@ async def test_timeout_is_noop_when_nurse_already_responded(
     awaiting_delivery.status = Status.FAILED
     awaiting_delivery.fail_reason = "환자 부재"
 
-    with patch("app.api.deliveries.subprocess.Popen") as mock_popen:
+    with patch("app.api.deliveries.broadcaster.publish") as mock_publish:
         await deliveries._expire_nurse_wait(awaiting_delivery.id)
 
     assert awaiting_delivery.fail_reason == "환자 부재"
-    mock_popen.assert_not_called()
+    mock_publish.assert_not_called()
 
 
 async def test_timeout_is_noop_when_delivery_gone() -> None:
-    with patch("app.api.deliveries.subprocess.Popen") as mock_popen:
+    with patch("app.api.deliveries.broadcaster.publish") as mock_publish:
         await deliveries._expire_nurse_wait("unknown")
-    mock_popen.assert_not_called()
+    mock_publish.assert_not_called()
 
 
 async def test_nurse_response_cancels_pending_timeout(
@@ -71,9 +72,8 @@ async def test_nurse_response_cancels_pending_timeout(
 async def test_timeout_task_deregisters_itself_after_firing(
     awaiting_delivery: Delivery,
 ) -> None:
-    with patch("app.api.deliveries.subprocess.Popen"):
-        deliveries._start_nurse_timeout(awaiting_delivery.id)
-        await deliveries._nurse_timeouts[awaiting_delivery.id]
+    deliveries._start_nurse_timeout(awaiting_delivery.id)
+    await deliveries._nurse_timeouts[awaiting_delivery.id]
 
     assert awaiting_delivery.id not in deliveries._nurse_timeouts
     assert awaiting_delivery.status == Status.FAILED

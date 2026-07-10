@@ -154,15 +154,24 @@ def _show_emotion_and_return(self, style):
 > 로봇 쪽 `MAX_POLL_SEC = 600`(10분)은 백엔드가 응답하지 않을 때만 걸리는 안전망이다.
 > 정상 흐름에서는 백엔드의 5분 상한이 항상 먼저 걸린다.
 
-### 2.4 정리 대상 (⚠️ 코드와 문서 불일치)
+### 2.4 정리 완료 — `--state 복귀` 경로 제거
 
-- **`--state 복귀` 실행 경로** — 백엔드 `_trigger_return_process()` 가 여전히
-  `subprocess.Popen(["python3", _RETURN_SCRIPT, "--state", "복귀", ...])` 로 이걸 부른다
-  (`backend/app/api/deliveries.py` 4곳).
-  그런데 `_RETURN_SCRIPT` 는 `~/pinky_pro/...` 경로라 **백엔드가 도는 머신(맥북)에는
-  존재하지 않는다.** 즉 실제로는 매번 실패하고, 복귀는 로봇이 폴링 결과를 보고
-  스스로 수행한다.
-  → 백엔드의 subprocess 호출을 제거하는 것이 맞다. **팀 논의 후 정리 필요.**
+v1 의 `_trigger_return_process()` (백엔드 → `subprocess.Popen(junction_1.py --state 복귀)`)
+와 그 진입점을 양쪽에서 삭제했다. 근거:
+
+- `_RETURN_SCRIPT` 는 `~/pinky_pro/...` 경로라 백엔드가 도는 머신(맥북)에 없다.
+  `Popen` 은 `python3` 를 찾으니 **예외를 던지지 않고**, 자식이 종료코드 2로 조용히
+  죽는다. 백엔드는 복귀를 트리거했다고 믿지만 아무 일도 일어나지 않았고,
+  `wait()` 도 안 해서 좀비 프로세스만 쌓였다.
+- 경로가 맞았더라도 `junction_1.py` 는 Nav2 액션 서버·LCD·카메라를 잡는 ROS2
+  노드라 **로봇 위에서** 돌아야 한다. 백엔드 머신에서 띄우는 건 의미가 없다.
+- 복귀는 이미 로봇이 스스로 한다 — `_poll_tick()` 이 terminal 상태를 보면
+  `_begin_return()` 으로 표정 표시 + 간호실 Nav2 goal 을 실행한다.
+- 로봇 쪽에서도 `--state 복귀` 를 부르는 곳이 없었다. `mission_dispatcher.py` 는
+  `--room-number` / `--delivery-id` 만 넘긴다.
+
+함께 삭제된 것: `junction_1.py` 의 `--state` 인자와, 그 진입점에서만 쓰이던
+`show_emotion_face()`. 백엔드의 `import subprocess` · `_RETURN_SCRIPT` 상수.
 
 ---
 
