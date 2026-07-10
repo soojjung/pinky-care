@@ -94,6 +94,7 @@ pinky-care/
 - **실패(X · 혼동 · 인식 실패)** — 로봇은 병실에 대기, 간호사에게 알림(`AWAITING_NURSE`)
   - 간호사가 **"바로 복귀"** 선택 → 😢 슬픔 LCD → 자동 복귀
   - 간호사가 **"대기해, 내가 갈게"** 선택 → 병실에서 최대 5분 대기 → 간호사와 함께 복귀
+  - 5분 안에 간호사 응답이 없으면 → 실패 확정 후 로봇이 혼자 자동 복귀
 
 어느 경로든 마지막은 🏠 **간호실 도착 · 다음 배송 대기**로 마무리됩니다.
 
@@ -104,14 +105,14 @@ pinky-care/
 ```
 REQUESTED ──► MOVING ──► ARRIVED ──► VERIFYING ─┬─► SUCCESS         (terminal)
                                                 │
-                                                ├─► AWAITING_NURSE ─┬─► SUCCESS  (terminal)
-                                                │                    └─► FAILED   (terminal)
+                                                ├─► AWAITING_NURSE ──► FAILED   (terminal)
                                                 │
-                                                └─► FAILED           (terminal)
+                                                └─► FAILED           (terminal, 레거시 경로)
 ```
 
 - `VERIFYING`: 30초 창 동안 YOLO가 프레임 판별 중
-- `AWAITING_NURSE`: YOLO가 실패로 판정했지만 간호사의 결정(즉시 복귀 / 대기 후 동반 복귀)이 필요할 때만 진입
+- `AWAITING_NURSE`: YOLO가 실패로 판정했지만 간호사의 결정(즉시 복귀 / 대기 후 동반 복귀)이 필요할 때만 진입.
+  간호사가 어떤 선택을 하든 배송은 `FAILED`로 기록되며, 5분 안에 응답이 없으면 백엔드가 자동 확정한다.
 - 정의되지 않은 전이는 백엔드가 `409 INVALID_TRANSITION`으로 거부
 
 ### 2.4 화면 흐름 (frontend)

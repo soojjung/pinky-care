@@ -2,8 +2,8 @@
 
 병원 간호 로봇(Pinky) 배송 시스템(**PinkyCare**)의 백엔드 API 명세서입니다. 프론트엔드 · ROS2(자율주행) · YOLO(배송 판별) 세 개의 클라이언트가 이 API를 통해 통신합니다.
 
-- **버전**: v1
-- **최종 수정일**: 2026-07-06
+- **버전**: v3
+- **최종 수정일**: 2026-07-09
 - **관련 저장소**: `pinky-care` (모노레포)
 - **프론트 타입 정의(진실의 원천)**: `frontend/src/types/delivery.ts`
 
@@ -12,12 +12,17 @@
 ## 1. 시스템 개요
 
 ```
-[간호사 웹 UI] ─── REST / SSE ───► [FastAPI 백엔드] ◄─── REST ─── [ROS2 노드 · YOLO 파이프라인]
+                        ┌─────────────────────────┐
+[간호사 웹 UI] ◄─ SSE ──┤    FastAPI 백엔드       │── SSE ─► [미션 디스패처] ─┐
+               ── REST ─►│  (YOLO 추론 인프로세스) │◄─ REST ──   (로봇)        │ 실행
+                        └─────────────────────────┘                ▲          ▼
+                                                                   └──── [ROS2 주행 노드]
 ```
 
 - 프론트엔드는 배송을 요청하고 상태를 실시간으로 받아 표시함
-- ROS2 노드는 로봇의 이동 상태를 백엔드에 알림
-- YOLO 파이프라인은 도착 후 배송 성공/실패 판별 결과를 백엔드에 알림
+- **YOLO는 별도 서버가 아니라 백엔드 프로세스 안에서 인프로세스로 추론함** (FastAPI 서버는 1개)
+- 로봇의 미션 디스패처가 전역 SSE(`GET /deliveries/events`)를 구독하다가, 새 배송이 생기면 주행 노드를 자동 실행함
+- ROS2 주행 노드는 이동 상태를 REST로 백엔드에 보고하고, 최종 결과는 `GET /deliveries/{id}`를 폴링해서 확인함
 - 백엔드는 상태 변경을 SSE로 프론트에 브로드캐스트함
 
 ---
@@ -43,7 +48,7 @@
 ```json
 {
   "id": "a7f3e0c8-2b9a-4d4e-9c1f-3a5b8e2d7f10",
-  "room": "101",
+  "room": "102",
   "item": "약",
   "status": "MOVING",
   "createdAt": "2026-07-06T14:23:00.123Z",
@@ -54,11 +59,11 @@
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `id` | string (UUID) | 배송 식별자 |
-| `room` | enum | `"101"` \| `"102"` \| `"103"` |
+| `room` | enum | `"102"` \| `"103"` \| `"104"` (101호는 간호실/복귀 지점이라 제외) |
 | `item` | enum | `"약"` \| `"기저귀"` \| `"혈당측정키트"` \| `"물티슈"` |
 | `status` | enum | 아래 상태 표 참고 |
 | `createdAt` | string (ISO 8601) | 배송 생성 시각 |
-| `failReason` | string \| null | `status="FAILED"`일 때만 채움. 그 외 `null` |
+| `failReason` | string \| null | `status="AWAITING_NURSE"` 또는 `"FAILED"`일 때 채움. 그 외 `null` |
 
 ### 3.2 상태(`status`) 값
 
@@ -112,6 +117,7 @@
         SUCCESS  ──────┘           └──────  AWAITING_NURSE  (+ failReason)
        (terminal, 자동 복귀)                  │
                                               │  간호사: POST /nurse-return-command
+                                              │  또는 5분 무응답 → 백엔드가 자동 확정
                                               ▼
                                           ┌────────┐
                                           │ FAILED │  (terminal, + 복귀 스크립트 트리거)
@@ -120,6 +126,11 @@
 
 - **`AWAITING_NURSE` 는 YOLO 자동 파이프라인에서만 나오는 상태.** 레거시
   `PATCH /verification {result:FAILED}` 는 이 상태를 건너뛰고 바로 `FAILED`로 감.
+- **`AWAITING_NURSE` 에서 나가는 길은 `FAILED` 뿐이다.** 간호사가 어떤 선택을 하든
+  배송 자체는 실패로 기록된다 (`choice` 는 감사 로그용).
+- **`AWAITING_NURSE` 는 terminal 이 아니므로 SSE 스트림이 닫히지 않는다.**
+- 5분(`_AWAITING_NURSE_TIMEOUT_S = 300`) 안에 간호사 응답이 없으면 백엔드가
+  스스로 `FAILED` 로 확정하고 복귀를 트리거한다. `failReason` 은 YOLO 사유를 유지.
 - 정의되지 않은 전이는 `409 Conflict`로 거부.
 
 ---
@@ -134,14 +145,14 @@ POST /deliveries
 
 **Request Body**
 ```json
-{ "room": "101", "item": "약" }
+{ "room": "102", "item": "약" }
 ```
 
 **Response `201 Created`**
 ```json
 {
   "id": "a7f3e0c8-...",
-  "room": "101",
+  "room": "102",
   "item": "약",
   "status": "REQUESTED",
   "createdAt": "2026-07-06T14:23:00.123Z",
@@ -156,7 +167,7 @@ POST /deliveries
 ```bash
 curl -X POST http://localhost:8000/deliveries \
   -H 'Content-Type: application/json' \
-  -d '{"room":"101","item":"약"}'
+  -d '{"room":"102","item":"약"}'
 ```
 
 ---
@@ -198,13 +209,13 @@ Connection: keep-alive
 
 ```
 event: status
-data: {"id":"a7f3...","room":"101","item":"약","status":"MOVING","createdAt":"...","failReason":null}
+data: {"id":"a7f3...","room":"102","item":"약","status":"MOVING","createdAt":"...","failReason":null}
 
 event: status
-data: {"id":"a7f3...","room":"101","item":"약","status":"ARRIVED","createdAt":"...","failReason":null}
+data: {"id":"a7f3...","room":"102","item":"약","status":"ARRIVED","createdAt":"...","failReason":null}
 
 event: status
-data: {"id":"a7f3...","room":"101","item":"약","status":"SUCCESS","createdAt":"...","failReason":null}
+data: {"id":"a7f3...","room":"102","item":"약","status":"SUCCESS","createdAt":"...","failReason":null}
 ```
 
 **동작 규칙**
@@ -229,6 +240,41 @@ es.addEventListener("status", (e) => {
 ---
 
 ## 6. ROS2용 엔드포인트
+
+### 6.0 새 배송 전역 스트림 (배송 자동 트리거)
+
+```
+GET /deliveries/events
+```
+
+로봇의 **미션 디스패처**(`mission_dispatcher.py`)가 상시 구독하는 스트림.
+`POST /deliveries` 로 배송이 생성되는 순간 이벤트가 발행되고, 디스패처가 이를 받아
+주행 스크립트를 자동 실행한다. 사람이 수동으로 로봇을 출발시킬 필요가 없다.
+
+**Event 형식**
+
+이벤트 이름: `delivery`. `data`는 새로 생성된 `Delivery` 스냅샷.
+
+```
+event: delivery
+data: {"id":"a7f3...","room":"102","item":"약","status":"REQUESTED","createdAt":"...","failReason":null}
+```
+
+**동작 규칙**
+- 배송별 스트림(`/deliveries/{id}/events`)과 달리 **종료되지 않는 상시 스트림**
+- 30초마다 keepalive 프레임 발송
+- 디스패처는 한 번에 한 미션만 순차 처리하고, 이미 본 `id` 는 무시함
+- 연결이 끊기면 디스패처가 3초 후 자동 재접속
+
+> ⚠️ 라우팅 주의: 이 경로는 `/{delivery_id}` 보다 **먼저** 선언되어야 한다.
+> 안 그러면 `delivery_id="events"` 로 잡힌다.
+
+**curl**
+```bash
+curl -N http://localhost:8000/deliveries/events
+```
+
+---
 
 ### 6.1 로봇 상태 갱신
 
@@ -365,9 +411,15 @@ POST /deliveries/{id}/nurse-return-command
 
 **Response `200 OK`** — 갱신된 `Delivery` (status=FAILED)
 
+**5분 타임아웃**
+
+`AWAITING_NURSE` 진입 시 백엔드가 300초 타이머를 건다. 그 안에 이 명령이 오지 않으면
+백엔드가 스스로 `FAILED` 로 확정하고 복귀 스크립트를 트리거한다 (로봇이 병실을
+무한 점유하는 것을 방지). 이 명령이 먼저 도착하면 타이머는 취소된다.
+
 **에러**
 - `404` — 존재하지 않는 id
-- `409` — 현재 상태가 `AWAITING_NURSE` 가 아님
+- `409` — 현재 상태가 `AWAITING_NURSE` 가 아님 (5분 타임아웃으로 이미 `FAILED` 확정된 경우 포함)
 - `422` — `choice` 값 미허용
 
 **curl**
@@ -414,7 +466,7 @@ class Base(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 class Room(str, Enum):
-    R101 = "101"; R102 = "102"; R103 = "103"
+    R102 = "102"; R103 = "103"; R104 = "104"   # 101호는 간호실/복귀 지점
 
 class Item(str, Enum):
     MED = "약"; DIAPER = "기저귀"; GLUCOSE = "혈당측정키트"; WIPE = "물티슈"
@@ -447,3 +499,4 @@ SSE 구현은 `sse-starlette`의 `EventSourceResponse` 사용을 권장.
 |---|---|---|
 | 2026-07-06 | v1 | 초안 작성 |
 | 2026-07-08 | v2 | YOLO 자동 파이프라인 통합: `POST /image`, ARRIVED 자동 트리거, `AWAITING_NURSE` 상태, `POST /nurse-return-command`, `failReason` enum 3종 (X_CARD_DETECTED · TIMEOUT_NO_CARD · AMBIGUOUS_BOTH_CARDS). 레거시 `PATCH /verification` 은 유지. |
+| 2026-07-09 | v3 | 병실 재편 `101/102/103` → `102/103/104` (101호 = 간호실). `GET /deliveries/events` 전역 스트림(미션 디스패처) 문서화. `AWAITING_NURSE` 5분 타임아웃 자동 복귀 추가. 시스템 개요를 실제 구조(YOLO 인프로세스, 로봇 폴링)에 맞게 정정. |

@@ -13,11 +13,16 @@
 
 - **§3.1 데이터셋** ✅ v1 완료 (194장, `yolo/pinkycare.yolov8/`)
 - **§3.2 모델 학습** ✅ v1 완료 (`yolo/runs/detect/delivery_train/weights/best.pt`, mAP@0.5=0.977)
-- **§3.3 추론 모듈** 🔜 다음 작업 (`backend/app/services/yolo.py` 신규)
-- **§3.4 백엔드 자동 트리거** 🔜 다음 작업
-- **§3.5 프레임 소스** — 방식 A 확정 (§4 참고). ROS2 팀 구현 대기
+- **§3.3 추론 모듈** ✅ 완료 (`backend/app/services/yolo.py`)
+- **§3.4 백엔드 자동 트리거** ✅ 완료 (`ARRIVED` 진입 시 30초 창 자동 시작)
+- **§3.5 프레임 소스** ✅ 완료 (방식 A — ROS2가 초당 1회 `POST /image`)
 
-내일 시작할 지점 = **§3.3부터**.
+v1 파이프라인은 모두 구현됐다. 남은 것은 §5 실환경 데이터 다양성(v2 과제).
+
+> ⚠️ 아래 §3.3의 의사코드는 **초기 설계안**이다. 실제 구현은 프레임 하나로 즉시
+> 판정하지 않고, **30초 창 동안 라벨별 감지 횟수를 누적해 `MIN_CONFIRMATIONS(=3)`
+> 이상인 라벨만 확정**한 뒤 창이 끝나는 순간 판정한다. 진실의 원천은
+> `backend/app/services/yolo.py`.
 
 ---
 
@@ -106,7 +111,7 @@ from typing import NamedTuple, Protocol
 import asyncio, time
 from app.models.delivery import VerificationResult
 
-CONF_THRESHOLD = 0.6
+CONF_THRESHOLD = 0.35
 POLL_INTERVAL_SEC = 1.0
 RESPONSE_TIMEOUT_SEC = 30       # 노인 병동 기준
 
@@ -242,14 +247,19 @@ Response: 204 No Content
 - **O/X 동시 감지 시**: `FAILED` + reason `"응답 모호 — 재확인 필요"` (안전 우선)
 - **프레임 전달**: 방식 A — ROS2가 초당 1회 `POST /deliveries/{id}/image`
 - **폴링 간격**: 백엔드 1초
-- **confidence 임계값**: 0.6
+- **confidence 임계값**: **0.35** (구현값 — `backend/app/services/yolo.py`. 계획 0.6 → 0.5 → 실측 기반 0.35)
+  - 근거: 실측상 O카드 검출 신뢰도는 0.34~0.66, 카드가 없을 때 배경 초록 노이즈는 ≤0.27.
+    0.35는 노이즈 위이면서 약한 실제 검출까지 잡는 경계다 (0.4는 통과 프레임이 0.5와 같아 무의미)
+  - 주의: `yolo/detect_ox.py`(웹캠 CLI)는 아직 `CONF = 0.5` 다. 백엔드 판정과 값이 다르다
+- **확정 조건**: 30초 창 안에 같은 라벨이 `MIN_CONFIRMATIONS(=3)` 프레임 이상 감지되어야 "확정"
+  (연속이 아니라 **누적** 횟수)
 - **verify 인터페이스**: `expected_item` 파라미터 없음. 배송 물품은 UI 표시용으로만 유지.
 
 ### 아직 미결정 (팀 협의)
 
 - **[ ] 카메라 하드웨어 최종 스펙**: 로봇에 어떤 카메라가 붙는가? (RGB 웹캠, RealSense, RPi Cam) → 실제 사진 화질/시야각으로 v1 모델 성능 재검증 필요
-- **[ ] 배송 미션 전달**: 백엔드 → ROS2 방향 트리거 (`REQUESTED` → Nav2 goal). SSE 구독안 유력 (`docs/ros2-coordination.md` §1)
-- **[ ] 병실 좌표 매핑**: `"101"/"102"/"103"` → Nav2 map coordinate. 팀원의 SLAM/map 결과 필요
+- **[x] 배송 미션 전달** — 완료. 로봇의 `mission_dispatcher.py` 가 `GET /deliveries/events` 를 구독하다가 새 배송이 오면 `junction_1.py` 를 자동 실행한다.
+- **[x] 병실 좌표 매핑** — 완료. `junction_1.py` 가 SLAM 맵 기준 `(x, y, yaw)` 테이블을 자체 보유 (`"102"/"103"/"104"` + 복귀 지점).
 - **[ ] 실패 시 재시도 정책**: FAILED 후 "다시 시도" 눌렀을 때 로봇이 다시 나가야 하나, 아니면 현 위치에서 재판정만 하나? (특히 무응답 타임아웃일 때)
 - **[ ] 프론트 안내 문구**: `VERIFYING` 상태 라벨을 "환자 응답 대기 중 (남은 시간: XX초)"로 개선할지, 지금 "배송 확인 중"으로 둘지
 - **[ ] 카드 물리적 관리**: 침대별 O/X 카드 세트 배포·회수·분실 대응은 병동 운영 이슈로 별도 논의

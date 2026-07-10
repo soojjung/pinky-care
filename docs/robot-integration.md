@@ -57,7 +57,7 @@ BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
 **실행 시**
 ```bash
-BACKEND_URL=http://<맥북-IP>:8000 python3 junction_1.py --room-number 101 --delivery-id <id>
+BACKEND_URL=http://<맥북-IP>:8000 python3 junction_1.py --room-number 102 --delivery-id <id>
 ```
 
 맥북 IP 확인은 시연 당일 맥북에서 `ipconfig getifaddr en0` 로.
@@ -146,15 +146,23 @@ def _show_emotion_and_return(self, style):
 | `SUCCESS` | 웃음 LCD → 자동 복귀 |
 | `FAILED` | 슬픔 LCD → 자동 복귀 |
 
-`AWAITING_NURSE` 는 최대 5분 대기 후 간호사가 `POST /nurse-return-command` 를
-누르면 백엔드가 `FAILED` 로 전이한다. 로봇 입장에선 폴링 결과가 `FAILED` 로 바뀌면
-즉시 슬픔 표정 + 복귀만 실행하면 된다.
+`AWAITING_NURSE` 에서는 간호사가 `POST /nurse-return-command` 를 누르면 백엔드가
+`FAILED` 로 전이한다. 5분 안에 아무 응답이 없으면 백엔드가 스스로 `FAILED` 로
+확정한다(무한 대기 방지). 로봇 입장에선 두 경우가 구분되지 않는다 — 폴링 결과가
+`FAILED` 로 바뀌면 즉시 슬픔 표정 + 복귀만 실행하면 된다.
 
-### 2.4 삭제 가능한 것
+> 로봇 쪽 `MAX_POLL_SEC = 600`(10분)은 백엔드가 응답하지 않을 때만 걸리는 안전망이다.
+> 정상 흐름에서는 백엔드의 5분 상한이 항상 먼저 걸린다.
 
-- **`--state 복귀` 실행 경로** — 백엔드가 더 이상 subprocess 로 이걸 안 부른다.
-  다만 실행 지점에서 폴링 결과에 따라 표정·이동을 처리하니, 별도 진입점이 필요없다면
-  삭제해도 되고, 남겨두어도 무해함.
+### 2.4 정리 대상 (⚠️ 코드와 문서 불일치)
+
+- **`--state 복귀` 실행 경로** — 백엔드 `_trigger_return_process()` 가 여전히
+  `subprocess.Popen(["python3", _RETURN_SCRIPT, "--state", "복귀", ...])` 로 이걸 부른다
+  (`backend/app/api/deliveries.py` 4곳).
+  그런데 `_RETURN_SCRIPT` 는 `~/pinky_pro/...` 경로라 **백엔드가 도는 머신(맥북)에는
+  존재하지 않는다.** 즉 실제로는 매번 실패하고, 복귀는 로봇이 폴링 결과를 보고
+  스스로 수행한다.
+  → 백엔드의 subprocess 호출을 제거하는 것이 맞다. **팀 논의 후 정리 필요.**
 
 ---
 
@@ -218,7 +226,7 @@ curl http://<맥북-IP>:8000/deliveries/dummy
 BACKEND=http://<맥북-IP>:8000
 ID=$(curl -s -X POST $BACKEND/deliveries \
   -H 'Content-Type: application/json' \
-  -d '{"room":"101","item":"약"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+  -d '{"room":"102","item":"약"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
 
 curl -X PATCH $BACKEND/deliveries/$ID/robot-status \
   -H 'Content-Type: application/json' -d '{"status":"MOVING"}'
