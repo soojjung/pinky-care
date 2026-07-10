@@ -17,9 +17,10 @@ import sys
 import time
 
 import cv2
+import numpy as np
 import rclpy
 import requests  # 백엔드 API 전송
-from cv_bridge import CvBridge
+from action_msgs.msg import GoalStatus
 from nav2_msgs.action import NavigateToPose
 from pinky_interfaces.srv import Emotion  # 로봇 emotion_server 서비스
 from rclpy.action import ActionClient
@@ -37,13 +38,17 @@ MAX_POLL_SEC = 600          # 안전장치: 10분 넘게 terminal이 안 오면 
 # 실제 로봇 SLAM 맵에서 amcl_pose로 검증한 방별 목적지 좌표.
 # (nav_goal_and_check_node.py 와 동일 좌표계 — 로봇팀 실측값)
 ROOMS = {
-    # 배송 병실 102/103/104호
-    102: {'x': 0.63,  'y': 1.585, 'qz': 0.6992, 'qw': 0.7149, 'name': '102호'},
-    103: {'x': 1.333, 'y': 1.585, 'qz': 0.7089, 'qw': 0.7053, 'name': '103호'},
-    104: {'x': 1.807, 'y': 1.585, 'qz': 0.7055, 'qw': 0.7087, 'name': '104호'},
+    # 배송 병실 102/103/104호 — jong_map_2 에서 로봇을 몰고 가 /amcl_pose 로 실측한
+    # 자유공간 좌표. (102·103 은 이 값으로 실제 도달 확인됨)
+    102: {'x': 0.0539, 'y': 0.9484, 'qz': 0.9977, 'qw': 0.0677, 'name': '102호'},
+    103: {'x': 1.6052, 'y': 0.8744, 'qz': 0.8019, 'qw': 0.5974, 'name': '103호'},
+    104: {'x': 1.8591, 'y': 0.8496, 'qz': 0.7304, 'qw': 0.6830, 'name': '104호'},
 
-    # 복귀 지점 = 101호(간호실). 실측 좌표·자세 사용.
-    '복귀': {'x': 0.03, 'y': 1.3, 'qz': 0.7915, 'qw': 0.6111, 'name': '간호실'},
+    # 복귀 지점(간호실) — 원점에서 12cm 떨어진 (0.026, 0.114).
+    # 원점(0,0) 은 출발지로는 되지만 '목표'로는 못 쓴다: 셀이 벽/미탐에 가까워
+    # inflation 에 걸려 planner 가 경로를 못 만든다(복귀 abort). 이 지점은 7x7 전부
+    # 자유공간이라 목표로 유효하고, 102호에서 0.83m 라 복귀가 눈에 보인다.
+    '복귀': {'x': 0.026, 'y': 0.114, 'qz': 0.0, 'qw': 1.0, 'name': '간호실'},
 }
 
 ARRIVAL_THRESHOLD = 0.2  # m
@@ -76,7 +81,6 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
         self._goal_handle = None
         self._arrived = False
 
-        self.bridge = CvBridge()
         self.camera_sub = None
         self.yolo_start_time = None
         self.yolo_duration = 30.0  # yolo를 켜는 시간
@@ -85,6 +89,7 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
         # 결과 폴링 상태 (30초 창 종료 후 세팅됨)
         self._poll_timer = None
         self._poll_started_at = None
+        self._returning = False  # 복귀 절차 중복 진입 방지 (조기판정·폴링 공용)
 
         # LCD 직접 제어 대신 emotion_server 에 서비스로 표정 요청 (GPIO 충돌 방지)
         self.emotion_client = self.create_client(Emotion, 'set_emotion')
@@ -134,6 +139,21 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
         self.get_logger().info(f'[{self.room_name}] Nav2 액션 서버를 기다리는 중...')
         self._action_client.wait_for_server()
 
+        # 배송 미션(방 이동) 시작 시 백엔드에 MOVING 전이를 보낸다.
+        # 이게 있어야 도착 시 보내는 ARRIVED(MOVING→ARRIVED)가 수락된다.
+        # (없으면 REQUESTED→ARRIVED 는 409 로 거부되어 상태가 REQUESTED 에 멈춘다.)
+        # 복귀 주행(room_key='복귀')에는 보내지 않는다.
+        if self.delivery_id and self.room_key in (102, 103, 104):
+            try:
+                requests.patch(
+                    f"{BACKEND_URL}/deliveries/{self.delivery_id}/robot-status",
+                    json={"status": "MOVING"},
+                    timeout=5,
+                )
+                self.get_logger().info("백엔드 상태 전이 전송: MOVING")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                self.get_logger().error(f"백엔드 통신 실패 (MOVING): {e}")
+
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
         goal_msg.pose.header.frame_id = 'map'
@@ -170,34 +190,52 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
                               self.goal_y - current_pose.position.y)
 
         if distance <= ARRIVAL_THRESHOLD:
-            self._arrived = True
-            self.get_logger().info('======================================')
-            self.get_logger().info(f'로봇이 {self.room_name}에 무사히 도착했습니다!')
-            self.get_logger().info('======================================')
+            # feedback 으로 먼저 도착을 잡은 경우: 진행 중인 goal 을 취소한다.
+            self._handle_arrival(cancel_goal=True)
 
-            if self._goal_handle is not None:
-                self._goal_handle.cancel_goal_async()
+    def _handle_arrival(self, cancel_goal):
+        """도착 처리 — ARRIVED 전송 + (배송이면) 카메라 감시 시작. 한 번만 실행된다.
 
-            # 로봇 도착 시 백엔드 상태 전이 (ARRIVED) - 방 이동일 때만 전송
-            if self.delivery_id and self.room_key != '복귀':
-                try:
-                    requests.patch(
-                        f"{BACKEND_URL}/deliveries/{self.delivery_id}/robot-status",
-                        json={"status": "ARRIVED"},
-                    )
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    self.get_logger().error(f"백엔드 통신 실패 (ARRIVED): {e}")
+        feedback(0.2m 이내) 또는 Nav2 액션 성공(get_result_callback) 중
+        먼저 걸리는 쪽에서 호출된다. ``_arrived`` 로 중복 실행을 막는다.
+        """
+        if self._arrived:
+            return
+        self._arrived = True
 
-            if self.room_key in [102, 103, 104]:
-                self.get_logger().info(f'{self.yolo_duration}초간 실시간 객체 탐지를 시작합니다.')
-                self.yolo_start_time = time.time()
+        self.get_logger().info('======================================')
+        self.get_logger().info(f'로봇이 {self.room_name}에 무사히 도착했습니다!')
+        self.get_logger().info('======================================')
 
-                self.camera_sub = self.create_subscription(
-                    RosImage,
-                    '/camera/image_raw',   # 로봇 실제 카메라 토픽 (camera.py 와 동일)
-                    self.camera_callback,
-                    10,
+        if cancel_goal and self._goal_handle is not None:
+            self._goal_handle.cancel_goal_async()
+
+        # 복귀 도착은 별도 처리(상태 전이·카메라) 없음 — get_result_callback 이 종료 담당
+        if self.room_key == '복귀':
+            return
+
+        # 방 도착 시 백엔드 상태 전이 (ARRIVED)
+        if self.delivery_id:
+            try:
+                requests.patch(
+                    f"{BACKEND_URL}/deliveries/{self.delivery_id}/robot-status",
+                    json={"status": "ARRIVED"},
+                    timeout=5,
                 )
+                self.get_logger().info("백엔드 상태 전이 전송: ARRIVED")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                self.get_logger().error(f"백엔드 통신 실패 (ARRIVED): {e}")
+
+        if self.room_key in [102, 103, 104]:
+            self.get_logger().info(f'{self.yolo_duration}초간 실시간 객체 탐지를 시작합니다.')
+            self.yolo_start_time = time.time()
+
+            self.camera_sub = self.create_subscription(
+                RosImage,
+                '/camera/image_raw',   # 로봇 실제 카메라 토픽 (camera.py 와 동일)
+                self.camera_callback,
+                10,
+            )
 
     def camera_callback(self, msg):
         """카메라 프레임을 초당 1장씩 JPEG로 인코딩해 백엔드에 업로드한다.
@@ -216,7 +254,12 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
         if current_time - self.last_send_time >= 1.0:
             self.last_send_time = current_time
             try:
-                cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+                # cv_bridge 없이 sensor_msgs/Image → numpy 직접 변환.
+                # (로봇 cv_bridge C++ 확장이 깨져 imgmsg_to_cv2 가 ImportError 로 터짐)
+                # camera_publisher.py 가 bgr8 로 발행하므로 그대로 (H, W, 3) 로 reshape.
+                cv_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+                    msg.height, msg.width, 3
+                )
 
                 # 이미지 바이너리 인코딩
                 _, img_encoded = cv2.imencode('.jpg', cv_image)
@@ -230,6 +273,20 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
 
             except Exception as e:  # pylint: disable=broad-exception-caught
                 self.get_logger().error(f'이미지 처리 및 전송 중 오류: {e}')
+
+            # 조기 판정: 30초를 다 기다리지 않고, 백엔드가 이미 최종 판정(SUCCESS/FAILED)
+            # 했으면 즉시 복귀한다. success 는 백엔드가 확정 즉시 SUCCESS 로 전이하므로
+            # 여기서 바로 감지된다. (초당 1회, 업로드 직후에만 확인)
+            if self.delivery_id and not self._returning:
+                try:
+                    st = requests.get(
+                        f"{BACKEND_URL}/deliveries/{self.delivery_id}", timeout=2
+                    ).json().get("status")
+                except Exception:  # pylint: disable=broad-exception-caught
+                    st = None
+                if st in ("SUCCESS", "FAILED"):
+                    self.get_logger().info(f"[조기 판정] status={st} — 30초 대기 없이 복귀")
+                    self._begin_return("SUCCESS" if st == "SUCCESS" else "FAILURE")
 
     def _end_camera_window(self):
         """30초 창 종료 처리 — 카메라 정리 후 백엔드 상태 폴링 진입."""
@@ -286,7 +343,22 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
             self._finish_polling_and_return("FAILURE")
 
     def _finish_polling_and_return(self, flag):
-        """폴링 종료 → 표정 표시 → 간호실 복귀. flag: 'SUCCESS'|'FAILURE'."""
+        """폴링 종료 → 복귀. (_poll_tick 에서 호출)"""
+        self._begin_return(flag)
+
+    def _begin_return(self, flag):
+        """복귀 절차 — 카메라/폴링 정리 → 표정 → 간호실 복귀. 한 번만 실행된다.
+
+        조기 판정(camera_callback)과 폴링 종료(_poll_tick) 양쪽에서 호출되므로
+        ``_returning`` 으로 중복 실행을 막는다. flag: 'SUCCESS'|'FAILURE'.
+        """
+        if self._returning:
+            return
+        self._returning = True
+
+        if self.camera_sub is not None:
+            self.destroy_subscription(self.camera_sub)
+            self.camera_sub = None
         if self._poll_timer is not None:
             self._poll_timer.cancel()
             self._poll_timer = None
@@ -308,17 +380,32 @@ class NavGoalNode(Node):  # pylint: disable=too-many-instance-attributes
         self._goal_handle = None
         self.send_goal()
 
-    def get_result_callback(self, _future):
+    def get_result_callback(self, future):
         """Nav2 액션이 종료됐을 때 정리 작업을 수행한다.
 
         방 도착일 때는 카메라 감시가 이어지므로 shutdown 하지 않고,
         복귀 도착일 때만 프로세스를 종료한다.
+
+        feedback 의 0.2m 문턱을 못 넘겼어도 Nav2 가 자체 허용오차(≈0.25m)로
+        목표 도달에 성공(STATUS_SUCCEEDED)한 경우, 여기서 도착 처리를 해준다.
+        (안 그러면 ARRIVED 미전송으로 프론트가 '이동 중'에 멈춘다.)
         """
-        del _future
-        self.get_logger().info('네비게이션 종료.')
+        status = future.result().status
+        self.get_logger().info(f'네비게이션 종료. (status={status})')
         cv2.destroyAllWindows()
+
         if self.room_key == '복귀':
             rclpy.shutdown()
+            return
+
+        if status == GoalStatus.STATUS_SUCCEEDED and not self._arrived:
+            self.get_logger().info('Nav2 목표 도달 성공 — 도착 처리를 진행합니다.')
+            self._handle_arrival(cancel_goal=False)
+        elif not self._arrived:
+            self.get_logger().warn(
+                f'도착으로 처리되지 않은 채 네비게이션이 끝남 (status={status}). '
+                f'주행 실패/중단 가능성 — ARRIVED 미전송.'
+            )
 
 
 def main():
