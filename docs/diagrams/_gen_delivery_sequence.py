@@ -2,6 +2,12 @@
 
 4개 액터: 간호사 · 화면 · 관제 시스템 · 로봇.
 성공/실패 분기, 실패 시 간호사 선택(복귀/대기), 5분 타임아웃 포함.
+
+주의 — 로봇 제어의 방향:
+관제 시스템은 로봇에게 명령하지 않는다. 로봇이 새 배송 알림을 구독해
+스스로 출발하고, 결과를 1초 간격으로 폴링해 스스로 복귀한다.
+(기존 판본은 "이 방으로 이동해줘" / "복귀해줘" 처럼 관제가 지시하는 것으로
+그려져 있었으나, 이는 이후 버린 설계다.)
 """
 import json
 import os
@@ -137,8 +143,8 @@ common_messages = [
     (170, "N1", "N2", "방·물품 선택 후 “요청” 버튼", "solid"),
     (215, "N2", "N3", "배송 요청 전달", "solid"),
     (260, "N3", "N2", "“요청됨” 상태 표시", "dashed"),
-    (325, "N3", "N4", "이 방으로 이동해줘", "solid"),
-    (370, "N4", "N3", "이동 시작했어요", "solid"),
+    (325, "N3", "N4", "새 배송 알림 (로봇이 구독 중)", "dashed"),
+    (370, "N4", "N3", "받았어요 — 이동 시작합니다", "solid"),
     (415, "N3", "N2", "“이동 중” 상태 표시", "dashed"),
     (475, "N4", "N3", "병실에 도착했어요", "solid"),
     (520, "N3", "N2", "“도착 · 확인 중” 상태 표시", "dashed"),
@@ -150,18 +156,20 @@ common_messages = [
 
 # ── 성공 분기 ─────────────────────────────────────────────
 success_messages = [
-    (900, "N3", "N4", "복귀해줘", "solid"),
+    (890, "N4", "N3", "결과 나왔나요? (1초마다 물어봄)", "solid"),
+    (925, "N3", "N4", "성공으로 확정됐어요", "dashed"),
 ]
 
 # ── 실패 분기: 알림 + 선택 + 대기 + 종료 ──────────────────
 failure_messages = [
     (1145, "N1", "N2", "“바로 복귀” 또는 “대기해, 내가 갈게” 선택", "solid"),
     (1190, "N2", "N3", "간호사의 선택 전달", "solid"),
-    (1235, "N3", "N4", "선택에 따라 지시 (복귀 or 그 자리 대기)", "solid"),
-    # NOTE 1275-1370: 병실 그 자리에서 대기 (최대 5분)
-    (1400, "N1", "N2", "간호사 도착 → “복귀 보내기” 버튼", "solid"),
-    (1445, "N2", "N3", "복귀 지시 전달", "solid"),
-    (1490, "N3", "N4", "복귀해줘 (또는 5분 초과 자동 복귀)", "solid"),
+    (1235, "N4", "N3", "결과 나왔나요? (1초마다 물어봄)", "solid"),
+    (1270, "N3", "N4", "아직 간호사 결정 대기 중이에요", "dashed"),
+    # NOTE 1300-1390: 병실 그 자리에서 대기 (최대 5분)
+    (1420, "N1", "N2", "간호사 도착 → “복귀 보내기” 버튼", "solid"),
+    (1455, "N2", "N3", "복귀 지시 전달", "solid"),
+    (1490, "N3", "N4", "실패로 확정됐어요 (또는 5분 초과 자동 확정)", "dashed"),
 ]
 
 # ── 마지막 공통: 간호실 도착 ──────────────────────────────
@@ -193,6 +201,15 @@ add_messages(success_messages, override_color="#2f9e44")
 add_messages(failure_messages, override_color="#c92a2a")
 add_messages(final_messages)
 
+# ── ② 로봇이 스스로 출발한다는 점을 명시 ─────────────────
+disp_id, disp_tid = "disp_note", "disp_note_t"
+elements.append(rect(disp_id, X["N4"] - 130, 395, 260, 56,
+                     "#087f5b", "#e6fcf5",
+                     stroke_width=1.5, bound_ids=[disp_tid]))
+elements.append(text(disp_tid, X["N4"] - 120, 403, 240, 40,
+                     "🤖 로봇의 미션 디스패처가\n주행을 자동 시작 (사람 개입 0)",
+                     "#087f5b", container=disp_id, font=12))
+
 # ── ③ 카드 확인 30초 창 (관제 시스템 lifeline 위) ─────────
 note_id, note_tid = "card_note", "card_note_t"
 elements.append(rect(note_id, 670, 605, 220, 110, "#5f3dc4", "#f3f0ff",
@@ -214,8 +231,8 @@ elements.append(text(success_banner_t, 350, 855, 880, 20,
 
 # 로봇 성공 self-notes
 succ_self = [
-    (945, "LCD “배송 성공!” 3초"),
-    (975, "웃음 얼굴 GIF 재생 → 자율주행"),
+    (960, "LCD “배송 성공!” 3초"),
+    (992, "웃음 얼굴 → 스스로 복귀"),
 ]
 for i, (y, txt_) in enumerate(succ_self):
     rid, tid = f"succ_self_{i}", f"succ_self_t_{i}"
@@ -236,10 +253,10 @@ elements.append(text(fail_banner_t, 350, 1045, 880, 20,
 
 # 실패 - "로봇은 그 자리 대기" note (병실 그 자리에서 대기)
 wait_id, wait_tid = "wait_note", "wait_note_t"
-elements.append(rect(wait_id, X["N4"] - 130, 1275, 260, 90,
+elements.append(rect(wait_id, X["N4"] - 130, 1300, 260, 90,
                      "#c92a2a", "#fff5f5",
                      stroke_width=1.75, bound_ids=[wait_tid]))
-elements.append(text(wait_tid, X["N4"] - 120, 1285, 240, 70,
+elements.append(text(wait_tid, X["N4"] - 120, 1310, 240, 70,
                      "🕐 병실 그 자리에서 대기\n(최대 5분)\n\n"
                      "5분 초과 시 자동 복귀\n(로그: “간호사 미응답”)",
                      "#c92a2a", container=wait_id, font=12,
@@ -248,7 +265,7 @@ elements.append(text(wait_tid, X["N4"] - 120, 1285, 240, 70,
 # 실패 - LCD 슬픔 self-notes (마지막)
 fail_self = [
     (1540, "LCD “배송 실패!” 3초"),
-    (1570, "슬픔 얼굴 GIF 재생 → 자율주행"),
+    (1572, "슬픔 얼굴 → 스스로 복귀"),
 ]
 for i, (y, txt_) in enumerate(fail_self):
     rid, tid = f"fail_self_{i}", f"fail_self_t_{i}"
@@ -292,15 +309,19 @@ elements.append(text("title_t", -240, -20, 800, 40,
                      align="left", valign="top"))
 
 lg_id, lg_t = "lg", "lg_t"
-elements.append(rect(lg_id, 1260, 40, 240, 170, "#495057", "#f8f9fa",
+elements.append(rect(lg_id, 1260, 40, 260, 230, "#495057", "#f8f9fa",
                      stroke_width=1.5, bound_ids=[lg_t]))
-elements.append(text(lg_t, 1270, 50, 220, 150,
+elements.append(text(lg_t, 1270, 50, 240, 210,
                      "범례\n\n"
-                     "──▶  지시 · 응답\n"
-                     "╌╌▶  상태 알림 · 결과\n"
+                     "──▶  요청 · 보고 · 물어보기\n"
+                     "╌╌▶  알림 · 결과 (밀어주기)\n"
                      "🟢 초록: 성공 자동 복귀\n"
                      "🔴 빨강: 실패 · 간호사 결정\n"
-                     "▢    카드 확인 창 / 대기 상태",
+                     "▢    카드 확인 창 / 대기 상태\n\n"
+                     "※ 관제 시스템은 로봇에게 명령하지\n"
+                     "   않는다. 로봇이 알림을 구독해\n"
+                     "   스스로 출발하고, 결과를 물어봐\n"
+                     "   스스로 복귀한다.",
                      "#495057", container=lg_id, font=12,
                      align="left", valign="top"))
 
