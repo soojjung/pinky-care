@@ -288,6 +288,17 @@ async def upload_image(delivery_id: str, image: UploadFile) -> Response:
             detail={"code": "VALIDATION_ERROR", "message": "empty image body"},
         )
     frame_cache.put(delivery_id, data)
+
+    # 디버그: PINKY_SAVE_FRAMES=1 이면 업로드된 프레임을 디스크에 저장해
+    # YOLO 인식 문제를 눈으로/모델로 검증할 수 있게 한다.
+    if os.environ.get("PINKY_SAVE_FRAMES"):
+        import pathlib
+        import time as _t
+
+        dbg = pathlib.Path("/tmp/pinky-frames") / delivery_id
+        dbg.mkdir(parents=True, exist_ok=True)
+        (dbg / f"{int(_t.time() * 1000)}.jpg").write_bytes(data)
+
     return Response(status_code=204)
 
 
