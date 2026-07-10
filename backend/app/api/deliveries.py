@@ -32,9 +32,14 @@ router = APIRouter(prefix="/deliveries", tags=["deliveries"])
 
 _VERIFYING_TO_RESULT_DELAY_S = 0.3
 _SSE_PING_INTERVAL_S = 30
+# AWAITING_NURSE 에서 간호사 응답이 없을 때 로봇이 무한 대기하지 않도록 하는 상한 (시나리오 v3 §4)
+_AWAITING_NURSE_TIMEOUT_S = 300.0
 _RETURN_SCRIPT = os.path.expanduser(
     "~/pinky_pro/src/pinky_pro/pinky_navigation/scripts/junction_1.py"
 )
+
+# delivery_id → 진행 중인 5분 타임아웃 태스크
+_nurse_timeouts: dict[str, asyncio.Task] = {}
 
 
 def _not_found(delivery_id: str) -> HTTPException:
@@ -62,6 +67,41 @@ def _trigger_return_process(delivery_id: str) -> None:
     subprocess.Popen(
         ["python3", _RETURN_SCRIPT, "--state", "복귀", "--delivery-id", delivery_id]
     )
+
+
+async def _expire_nurse_wait(delivery_id: str) -> None:
+    """5분 안에 간호사 응답이 없으면 FAILED 로 확정하고 로봇을 복귀시킨다.
+
+    간호사가 먼저 응답하면 이 태스크는 취소된다. 취소를 놓친 경우에도
+    상태를 다시 확인해서 이미 AWAITING_NURSE 가 아니면 아무것도 하지 않는다.
+    """
+    try:
+        await asyncio.sleep(_AWAITING_NURSE_TIMEOUT_S)
+
+        delivery = store.get(delivery_id)
+        if delivery is None or delivery.status != Status.AWAITING_NURSE:
+            return
+
+        log.info("간호사 응답 없이 %.0f초 경과 → 자동 복귀 (%s)", _AWAITING_NURSE_TIMEOUT_S, delivery_id)
+        delivery.status = Status.FAILED  # fail_reason 은 YOLO 가 붙인 사유를 그대로 유지
+        broadcaster.publish(delivery)
+        _trigger_return_process(delivery_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001
+        log.exception("간호사 대기 타임아웃 처리 중 예외 (%s)", delivery_id)
+    finally:
+        _nurse_timeouts.pop(delivery_id, None)
+
+
+def _start_nurse_timeout(delivery_id: str) -> None:
+    _nurse_timeouts[delivery_id] = asyncio.create_task(_expire_nurse_wait(delivery_id))
+
+
+def _cancel_nurse_timeout(delivery_id: str) -> None:
+    task = _nurse_timeouts.pop(delivery_id, None)
+    if task is not None:
+        task.cancel()
 
 
 async def _complete_verification_legacy(
@@ -136,6 +176,7 @@ async def _run_yolo_pipeline(delivery_id: str) -> None:
             delivery.status = Status.AWAITING_NURSE
             delivery.fail_reason = reason_value
             broadcaster.publish(delivery)
+            _start_nurse_timeout(delivery_id)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001
@@ -278,7 +319,7 @@ async def submit_verification(delivery_id: str, payload: VerificationUpdate) -> 
     response_model=Delivery,
     response_model_by_alias=True,
 )
-def nurse_return_command(
+async def nurse_return_command(
     delivery_id: str, payload: NurseReturnCommand
 ) -> Delivery:
     """간호사가 실패 알림에 응답해서 로봇을 복귀시키는 명령.
@@ -294,6 +335,7 @@ def nurse_return_command(
     if delivery.status != Status.AWAITING_NURSE:
         raise _invalid_transition(delivery.status, Status.FAILED)
 
+    _cancel_nurse_timeout(delivery_id)
     delivery.status = Status.FAILED
     if payload.reason:
         delivery.fail_reason = payload.reason
